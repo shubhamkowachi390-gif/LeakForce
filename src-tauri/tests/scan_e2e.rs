@@ -1,0 +1,252 @@
+//! End-to-end scanner tests against the local mock lab servers.
+//!
+//! These tests are marked `#[ignore]` because they start Python processes and
+//! use localhost ports. Run them explicitly with:
+//!
+//!   cargo test --test scan_e2e -- --ignored --nocapture
+//!
+//! Everything is localhost-only. No external site is contacted.
+
+use leakforce_lib::scanner::{scan_target, ScanOptions};
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+struct LabServer {
+    child: Child,
+}
+
+impl Drop for LabServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri must have a parent folder")
+        .to_path_buf()
+}
+
+fn engine_script() -> PathBuf {
+    project_root()
+        .join("python-engine")
+        .join("leakforce_engine.py")
+}
+
+fn start_lab(port: u16, mode: &str, extra: &[&str]) -> LabServer {
+    let mock = project_root().join("test-lab").join("mock_server.py");
+    assert!(mock.is_file(), "mock server not found at {}", mock.display());
+    assert!(
+        engine_script().is_file(),
+        "python engine not found at {}",
+        engine_script().display()
+    );
+
+    let mut args: Vec<String> = vec![
+        mock.display().to_string(),
+        "--port".to_string(),
+        port.to_string(),
+        "--mode".to_string(),
+        mode.to_string(),
+    ];
+    for item in extra {
+        args.push((*item).to_string());
+    }
+
+    let child = Command::new("python")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("could not start the Python mock lab server (is python on PATH?)");
+
+    let lab = LabServer { child };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(300),
+        )
+        .is_ok()
+        {
+            return lab;
+        }
+        if Instant::now() >= deadline {
+            panic!("mock lab on port {port} did not start within 15 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+fn options() -> ScanOptions {
+    ScanOptions {
+        python: "python".to_string(),
+        engine_script: Some(engine_script()),
+    }
+}
+
+async fn run_scan(target: &str) -> leakforce_lib::models::ScanReport {
+    scan_target(target, &options(), |_level: &str, _message: &str| {})
+        .await
+        .expect("scan should succeed")
+}
+
+fn serialized(report: &leakforce_lib::models::ScanReport) -> String {
+    serde_json::to_string(report).expect("report should serialize")
+}
+
+#[tokio::test]
+#[ignore = "starts local mock servers; run explicitly"]
+async fn vulnerable_lab_finds_files_and_masked_secrets() {
+    let _lab = start_lab(18381, "success", &[]);
+    let report = run_scan("http://127.0.0.1:18381").await;
+
+    let titles: Vec<&str> = report
+        .findings
+        .iter()
+        .map(|finding| finding.title.as_str())
+        .collect();
+
+    for expected in [
+        "Exposed file: /.env",
+        "Exposed file: /.git/config",
+        "Exposed file: /.git/HEAD",
+        "Exposed file: /backup.zip",
+        "Exposed file: /backup.sql",
+        "Exposed file: /.DS_Store",
+        "Exposed file: /package.json",
+        "Exposed file: /docker-compose.yml",
+        "Exposed directory: /admin/",
+    ] {
+        assert!(
+            titles.contains(&expected),
+            "missing finding {expected}; got {titles:?}"
+        );
+    }
+
+    // robots.txt / sitemap.xml discoveries
+    assert!(
+        report
+            .file_checks
+            .iter()
+            .any(|check| check.source == "robots.txt" && check.found),
+        "robots.txt hidden path was not found"
+    );
+    assert!(
+        report
+            .file_checks
+            .iter()
+            .any(|check| check.source == "sitemap.xml" && check.found),
+        "sitemap.xml hidden path was not found"
+    );
+    assert!(
+        titles.contains(&"Discovered path: /hidden-admin-panel"),
+        "hidden admin panel discovery missing: {titles:?}"
+    );
+
+    // Secrets from app.js
+    for expected in [
+        "MongoDB URI",
+        "Google API Key",
+        "JWT Token",
+        "Hard-coded credential",
+    ] {
+        assert!(
+            titles.contains(&expected),
+            "missing secret {expected}; got {titles:?}"
+        );
+    }
+
+    assert_eq!(
+        report.secrets_found, 4,
+        "expected 4 secrets, got {}",
+        report.secrets_found
+    );
+    assert_eq!(
+        report.sensitive_found, 9,
+        "expected 9 exposed files, got {}",
+        report.sensitive_found
+    );
+    assert_eq!(
+        report.score, 100,
+        "critical + high secrets with .env/.git and backups must cap at 100"
+    );
+
+    // Every secret must be masked and no raw secret may survive anywhere.
+    for finding in report.findings.iter().filter(|f| f.module == "secret") {
+        assert!(
+            finding.masked.as_deref().unwrap_or("").contains("****"),
+            "secret is not masked: {finding:?}"
+        );
+    }
+    let blob = serialized(&report);
+    for raw in [
+        "S3cr3tP@ssw0rd!",
+        "AIzaSyD-1234567890abcdefghijklmnopqrstu",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+        "mongodb://leakuser:leakpass@",
+        "leakpass",
+    ] {
+        assert!(!blob.contains(raw), "raw secret leaked into report: {raw}");
+    }
+
+    assert!(
+        report.errors.is_empty(),
+        "scan returned errors: {:?}",
+        report.errors
+    );
+}
+
+#[tokio::test]
+#[ignore = "starts local mock servers; run explicitly"]
+async fn benign_lab_scores_zero() {
+    let _lab = start_lab(18383, "benign", &[]);
+    let report = run_scan("http://127.0.0.1:18383").await;
+
+    assert_eq!(report.score, 0, "clean lab must score 0");
+    assert_eq!(report.sensitive_found, 0, "clean lab must not expose files");
+    assert_eq!(report.secrets_found, 0, "clean lab must not expose secrets");
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.module == "port"),
+        "clean lab produced unexpected findings: {:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| finding.title.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+#[ignore = "starts local mock servers; run explicitly"]
+async fn spa_soft_404_does_not_create_fake_findings() {
+    let _lab = start_lab(18384, "spa", &[]);
+    let report = run_scan("http://127.0.0.1:18384").await;
+
+    assert_eq!(report.score, 0, "soft-404 lab must score 0");
+    assert_eq!(
+        report.sensitive_found, 0,
+        "soft-404 responses must be ignored"
+    );
+    assert_eq!(report.secrets_found, 0, "clean JS must not expose secrets");
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.module == "port"),
+        "soft-404 lab produced fake findings: {:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| finding.title.clone())
+            .collect::<Vec<_>>()
+    );
+}

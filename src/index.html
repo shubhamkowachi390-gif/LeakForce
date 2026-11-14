@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>LeakForce v1.0</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="h-screen overflow-hidden flex flex-col">
+    <div class="flex flex-1 min-h-0 overflow-hidden">
+      <!-- Sidebar -->
+      <aside class="w-64 shrink-0 bg-panel border-r border-slate-800 flex flex-col">
+        <div class="px-5 py-5 flex items-center gap-3 border-b border-slate-800">
+          <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-slate-950 font-black text-lg shadow-glow">LF</div>
+          <div>
+            <div class="font-bold text-lg leading-tight">LeakForce</div>
+            <div class="text-[11px] text-slate-400">v1.0 · Lab Edition</div>
+          </div>
+        </div>
+
+        <nav class="p-3 space-y-1 flex-1">
+          <button class="nav-btn active" data-nav="dashboard">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Dashboard
+          </button>
+          <button class="nav-btn" data-nav="sensitive">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            Sensitive Scan
+          </button>
+          <button class="nav-btn" data-nav="brute">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8.5-8.5M15 5l3 3M18 8l2-2"/></svg>
+            Brute Force
+            <span class="ml-auto text-[9px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">LAB</span>
+          </button>
+          <button class="nav-btn" data-nav="history">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+            History
+          </button>
+          <button class="nav-btn" data-nav="settings">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+            Settings
+          </button>
+        </nav>
+
+        <div class="p-4 border-t border-slate-800">
+          <div class="flex items-center gap-2 text-xs">
+            <span id="engine-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+            <span id="engine-label" class="text-slate-300">Checking engines…</span>
+          </div>
+          <div class="mt-2 text-[10px] leading-relaxed text-slate-500">
+            Authorized lab use only.<br />Scan targets you own or have permission to test.
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="flex-1 flex flex-col min-w-0">
+        <header class="h-16 shrink-0 border-b border-slate-800 bg-panel/60 backdrop-blur flex items-center justify-between gap-4 px-6">
+          <div class="min-w-0">
+            <h1 id="page-title" class="font-semibold text-lg leading-tight">Dashboard</h1>
+            <p id="page-sub" class="text-xs text-slate-400 truncate">Leak score, findings and scan overview</p>
+          </div>
+          <div class="flex items-center gap-3 min-w-0">
+            <span id="target-badge" class="hidden max-w-[320px] truncate rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300" title=""></span>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>Lab only
+            </span>
+          </div>
+        </header>
+
+        <div id="views" class="flex-1 overflow-y-auto p-6">
+          <!-- Dashboard -->
+          <section data-view-panel="dashboard" class="space-y-6">
+            <div class="grid grid-cols-2 xl:grid-cols-5 gap-3">
+              <div class="panel p-4 flex items-center gap-4 col-span-2 xl:col-span-1">
+                <div class="relative w-28 h-28 shrink-0">
+                  <svg viewBox="0 0 140 140" class="w-28 h-28 -rotate-90">
+                    <circle cx="70" cy="70" r="58" fill="none" stroke="#27272a" stroke-width="10"></circle>
+                    <circle id="score-arc" cx="70" cy="70" r="58" fill="none" stroke="#22c55e" stroke-width="10" stroke-linecap="round" stroke-dasharray="364.42" stroke-dashoffset="364.42" class="transition-all duration-700"></circle>
+                  </svg>
+                  <div class="absolute inset-0 flex flex-col items-center justify-center">
+                    <span id="score-value" class="text-3xl font-black leading-none">0</span>
+                    <span class="text-[10px] text-slate-400 mt-0.5">/ 100</span>
+                  </div>
+                </div>
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-slate-400">Leak Score</div>
+                  <div id="score-caption" class="text-sm font-semibold mt-1">No scan yet</div>
+                  <div class="text-[11px] text-slate-500 mt-1">Higher = more exposure</div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400">Sensitive Files</div>
+                <div id="card-sensitive" class="text-3xl font-bold mt-2">0</div>
+                <div class="text-[11px] text-slate-500 mt-1">found exposed</div>
+              </div>
+              <div class="card">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400">Secrets Found</div>
+                <div id="card-secrets" class="text-3xl font-bold mt-2 text-amber-300">0</div>
+                <div class="text-[11px] text-slate-500 mt-1">in JavaScript</div>
+              </div>
+              <div class="card">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400">Login Test</div>
+                <div id="card-login" class="text-sm font-semibold mt-3 leading-snug">Not tested</div>
+                <div class="text-[11px] text-slate-500 mt-1">lab brute force</div>
+              </div>
+              <div class="card">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400">Scan Time</div>
+                <div id="card-time" class="text-3xl font-bold mt-2">—</div>
+                <div class="text-[11px] text-slate-500 mt-1">last sensitive scan</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <div class="panel p-5 xl:col-span-2">
+                <div class="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 class="font-semibold">Latest target</h2>
+                    <p class="text-xs text-slate-400">Most recent scan summary</p>
+                  </div>
+                  <button id="dash-new-scan" class="btn btn-primary text-xs px-3 py-2">New Scan</button>
+                </div>
+                <div id="dash-empty" class="rounded-lg border border-dashed border-slate-700 bg-slate-900/30 p-6 text-center">
+                  <p class="text-sm text-slate-300">No scan has been run yet.</p>
+                  <p class="text-xs text-slate-500 mt-1">Enter a lab target in Sensitive Scan to begin.</p>
+                  <button id="dash-empty-start" class="btn btn-secondary text-xs mt-4">Open Sensitive Scan</button>
+                </div>
+                <div id="dash-content" class="hidden space-y-4">
+                  <div class="flex flex-wrap items-center gap-3">
+                    <span id="dash-target" class="font-mono text-sm text-emerald-300 break-all"></span>
+                    <span id="dash-started" class="text-xs text-slate-500"></span>
+                  </div>
+                  <div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 mb-2">Score breakdown</div>
+                    <ul id="score-breakdown" class="space-y-1.5 text-sm"></ul>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button id="dash-export-txt" class="btn btn-secondary text-xs">Export TXT</button>
+                    <button id="dash-export-json" class="btn btn-secondary text-xs">Export JSON</button>
+                    <button id="dash-export-html" class="btn btn-secondary text-xs">Export HTML</button>
+                    <button id="dash-open-exports" class="btn btn-ghost text-xs">Open Folder</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel p-5">
+                <div class="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 class="font-semibold">Top findings</h2>
+                    <p class="text-xs text-slate-400">Highest severity first</p>
+                  </div>
+                  <button id="dash-view-findings" class="btn btn-ghost text-xs px-2 py-1">View all</button>
+                </div>
+                <div id="dash-findings" class="space-y-2"></div>
+                <div id="dash-findings-empty" class="text-xs text-slate-500 py-6 text-center">No findings to show.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Sensitive scan -->
+          <section data-view-panel="sensitive" class="space-y-5 hidden">
+            <div class="panel p-5">
+              <div class="flex flex-col lg:flex-row lg:items-end gap-3">
+                <div class="flex-1">
+                  <label class="label" for="scan-target">Domain or URL</label>
+                  <input id="scan-target" class="input" type="text" spellcheck="false" autocomplete="off" placeholder="http://localhost:8381 or https://your-lab-target.com" />
+                  <p class="text-[11px] text-slate-500 mt-1.5">Only scan systems you own or have written permission to test.</p>
+                </div>
+                <button id="start-scan" class="btn btn-primary h-[42px] px-6">
+                  <svg id="scan-spinner" class="w-4 h-4 hidden animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".25" stroke-width="3"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+                  <span id="scan-button-text">Start Scan</span>
+                </button>
+              </div>
+              <div class="mt-3 flex items-center gap-3">
+                <div id="scan-progress" class="hidden flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                  <div class="progress-indeterminate h-full w-1/3 rounded-full bg-gradient-to-r from-emerald-500 to-blue-500"></div>
+                </div>
+                <span id="scan-status" class="text-xs text-slate-400">Ready</span>
+              </div>
+              <div id="scan-errors" class="hidden mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200"></div>
+            </div>
+
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div class="card"><div class="text-[10px] uppercase tracking-wider text-slate-400">Sensitive files</div><div id="scan-sensitive" class="text-2xl font-bold mt-1.5">0</div></div>
+              <div class="card"><div class="text-[10px] uppercase tracking-wider text-slate-400">Secrets</div><div id="scan-secrets" class="text-2xl font-bold mt-1.5 text-amber-300">0</div></div>
+              <div class="card"><div class="text-[10px] uppercase tracking-wider text-slate-400">Leak Score</div><div id="scan-score" class="text-2xl font-bold mt-1.5 text-emerald-300">0/100</div></div>
+              <div class="card"><div class="text-[10px] uppercase tracking-wider text-slate-400">Scan time</div><div id="scan-time" class="text-2xl font-bold mt-1.5">—</div></div>
+            </div>
+
+            <div class="panel">
+              <div class="p-4 border-b border-slate-800 flex flex-wrap items-center gap-3">
+                <div id="severity-filters" class="flex flex-wrap gap-1.5">
+                  <button class="chip active" data-filter="All">All <span id="count-all" class="opacity-70">0</span></button>
+                  <button class="chip" data-filter="Critical">Critical <span id="count-Critical" class="opacity-70">0</span></button>
+                  <button class="chip" data-filter="High">High <span id="count-High" class="opacity-70">0</span></button>
+                  <button class="chip" data-filter="Medium">Medium <span id="count-Medium" class="opacity-70">0</span></button>
+                  <button class="chip" data-filter="Low">Low <span id="count-Low" class="opacity-70">0</span></button>
+                  <button class="chip" data-filter="Info">Info <span id="count-Info" class="opacity-70">0</span></button>
+                </div>
+                <input id="finding-search" class="input ml-auto max-w-[260px] py-2 text-xs" type="search" placeholder="Search findings…" />
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-900/40">
+                    <tr>
+                      <th class="table-head px-4 py-3 w-24">Severity</th>
+                      <th class="table-head px-4 py-3">Finding</th>
+                      <th class="table-head px-4 py-3 w-56">Location</th>
+                      <th class="table-head px-4 py-3 w-20 text-right">Copy</th>
+                    </tr>
+                  </thead>
+                  <tbody id="findings-body"></tbody>
+                </table>
+              </div>
+              <div id="findings-empty" class="py-10 text-center text-sm text-slate-500">No findings yet. Run a scan to populate results.</div>
+              <div class="p-3 border-t border-slate-800 flex flex-wrap items-center gap-2">
+                <button id="export-txt" class="btn btn-secondary text-xs" disabled>Export TXT Report</button>
+                <button id="export-json" class="btn btn-secondary text-xs" disabled>Export JSON</button>
+                <button id="export-html" class="btn btn-secondary text-xs" disabled>Export HTML Report</button>
+                <button id="open-exports" class="btn btn-ghost text-xs">Open export folder</button>
+                <span class="ml-auto text-[11px] text-slate-500">Reports are saved in your Downloads\LeakForce folder.</span>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                  <h2 class="font-semibold">Sensitive file checks</h2>
+                  <p class="text-xs text-slate-400">Every path checked, including robots.txt / sitemap.xml discoveries</p>
+                </div>
+                <span id="checks-count" class="text-xs text-slate-500">0 checks</span>
+              </div>
+              <div class="overflow-x-auto max-h-[360px] overflow-y-auto scroll-thin">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-900/40 sticky top-0">
+                    <tr>
+                      <th class="table-head px-4 py-2.5 w-24">Result</th>
+                      <th class="table-head px-4 py-2.5">Path</th>
+                      <th class="table-head px-4 py-2.5 w-24">HTTP</th>
+                      <th class="table-head px-4 py-2.5 w-24">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody id="file-checks-body"></tbody>
+                </table>
+              </div>
+              <div id="checks-empty" class="py-8 text-center text-sm text-slate-500">No file checks yet.</div>
+            </div>
+          </section>
+
+          <!-- Brute force -->
+          <section data-view-panel="brute" class="space-y-5 hidden">
+            <div class="rounded-xl border border-red-500/40 bg-red-500/10 p-4 flex gap-3">
+              <svg class="w-5 h-5 text-red-300 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+              <div>
+                <h2 class="font-semibold text-red-200">Only use on lab / your own site with permission</h2>
+                <p class="text-xs text-red-200/80 mt-1">Never test on real websites without written permission. This module tries login combinations and can lock real accounts. It is limited to 1 request/second by default and stops automatically on lockout, rate limiting or CAPTCHA.</p>
+              </div>
+            </div>
+
+            <div class="panel p-5 space-y-4">
+              <label class="flex items-start gap-3 cursor-pointer select-none rounded-lg border border-slate-700 bg-slate-900/40 p-3">
+                <input id="brute-authorize" type="checkbox" class="mt-1 h-4 w-4 accent-emerald-500" />
+                <span>
+                  <span class="text-sm font-medium">I have permission / This is my lab target</span>
+                  <span class="block text-xs text-slate-400 mt-0.5">The login test will not start unless this is checked. The backend also refuses requests without this confirmation.</span>
+                </span>
+              </label>
+
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                  <label class="label" for="brute-target">Target login URL</label>
+                  <input id="brute-target" class="input" type="text" spellcheck="false" placeholder="http://localhost:8381/" />
+                </div>
+                <div>
+                  <label class="label" for="brute-username">Username (optional)</label>
+                  <input id="brute-username" class="input" type="text" spellcheck="false" placeholder="Leave empty to use default usernames" />
+                </div>
+                <div>
+                  <label class="label" for="brute-wordlist-mode">Wordlist</label>
+                  <select id="brute-wordlist-mode" class="input">
+                    <option value="builtin">Built-in top 100 passwords</option>
+                    <option value="custom">Custom .txt file (e.g. rockyou.txt)</option>
+                  </select>
+                </div>
+                <div id="brute-custom-wordlist" class="hidden">
+                  <label class="label" for="brute-wordlist-path">Wordlist path</label>
+                  <div class="flex gap-2">
+                    <input id="brute-wordlist-path" class="input" type="text" spellcheck="false" placeholder="C:\path\to\wordlist.txt" />
+                    <button id="brute-browse" class="btn btn-secondary shrink-0">Browse</button>
+                  </div>
+                </div>
+                <div>
+                  <label class="label" for="brute-delay">Delay between attempts</label>
+                  <select id="brute-delay" class="input">
+                    <option value="1000">1000 ms — slow &amp; safe (default)</option>
+                    <option value="2000">2000 ms — extra safe</option>
+                    <option value="500">500 ms — faster</option>
+                    <option value="250">250 ms — minimum</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label" for="brute-concurrency">Max parallel threads</label>
+                  <select id="brute-concurrency" class="input">
+                    <option value="1">1 — safest</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5 — maximum</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-3">
+                <button id="brute-start" class="btn btn-danger px-6" disabled>Start Login Test</button>
+                <button id="brute-stop" class="btn btn-secondary" disabled>Stop</button>
+                <span class="text-[11px] text-slate-500">Stops immediately on success, lockout, HTTP 429 or CAPTCHA.</span>
+              </div>
+
+              <div id="brute-form-info" class="hidden rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs text-blue-200"></div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/30 p-4 space-y-3">
+                <div class="flex items-center justify-between text-xs">
+                  <span id="brute-status" class="text-slate-300">Idle</span>
+                  <span id="brute-progress-text" class="text-slate-500">0%</span>
+                </div>
+                <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
+                  <div id="brute-progress" class="h-full w-0 rounded-full bg-gradient-to-r from-red-500 to-amber-400 transition-all duration-300"></div>
+                </div>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+                  <div><div class="text-[10px] uppercase tracking-wider text-slate-500">Tried</div><div id="brute-tried" class="text-lg font-semibold mt-0.5">0</div></div>
+                  <div><div class="text-[10px] uppercase tracking-wider text-slate-500">Current attempt</div><div id="brute-current" class="text-sm font-mono mt-1 truncate">—</div></div>
+                  <div><div class="text-[10px] uppercase tracking-wider text-slate-500">Time remaining</div><div id="brute-remaining" class="text-lg font-semibold mt-0.5">—</div></div>
+                  <div><div class="text-[10px] uppercase tracking-wider text-slate-500">Result</div><div id="brute-result" class="text-sm font-semibold mt-1">Not started</div></div>
+                </div>
+              </div>
+
+              <div id="brute-result-banner" class="hidden rounded-lg border px-4 py-3 text-sm"></div>
+
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Recent attempts</div>
+                <div id="brute-attempts" class="max-h-40 overflow-y-auto scroll-thin space-y-1 font-mono text-[11px] text-slate-400"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- History -->
+          <section data-view-panel="history" class="space-y-5 hidden">
+            <div class="panel p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h2 class="font-semibold">Scan history</h2>
+                  <p class="text-xs text-slate-400">Last 20 sensitive scans and login tests</p>
+                </div>
+                <div class="flex gap-2">
+                  <button id="refresh-history" class="btn btn-secondary text-xs">Refresh</button>
+                  <button id="clear-history" class="btn btn-ghost text-xs text-red-300">Clear history</button>
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-900/40">
+                    <tr>
+                      <th class="table-head px-4 py-3">Date</th>
+                      <th class="table-head px-4 py-3">Target</th>
+                      <th class="table-head px-4 py-3 w-36">Type</th>
+                      <th class="table-head px-4 py-3 w-20">Score</th>
+                      <th class="table-head px-4 py-3">Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body"></tbody>
+                </table>
+              </div>
+              <div id="history-empty" class="py-10 text-center text-sm text-slate-500">No history yet. Run a scan to create an entry.</div>
+            </div>
+          </section>
+
+          <!-- Settings -->
+          <section data-view-panel="settings" class="space-y-5 hidden">
+            <div class="panel p-5">
+              <h2 class="font-semibold mb-1">Engine settings</h2>
+              <p class="text-xs text-slate-400 mb-4">Paths are auto-detected. Change them only if a component is not found.</p>
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                  <label class="label" for="python-executable">Python executable</label>
+                  <input id="python-executable" class="input" type="text" spellcheck="false" placeholder="python" />
+                </div>
+                <div>
+                  <label class="label" for="java-executable">Java executable</label>
+                  <input id="java-executable" class="input" type="text" spellcheck="false" placeholder="java" />
+                </div>
+                <div>
+                  <label class="label" for="engine-override">Python engine path (optional)</label>
+                  <input id="engine-override" class="input" type="text" spellcheck="false" placeholder="Auto-detected" />
+                </div>
+                <div>
+                  <label class="label" for="jar-override">Java worker JAR path (optional)</label>
+                  <input id="jar-override" class="input" type="text" spellcheck="false" placeholder="Auto-detected" />
+                </div>
+                <div class="lg:col-span-2">
+                  <label class="label" for="wordlist-path">Default custom wordlist (optional)</label>
+                  <div class="flex gap-2">
+                    <input id="wordlist-path" class="input" type="text" spellcheck="false" placeholder="Leave empty to use the built-in top 100 list" />
+                    <button id="browse-settings-wordlist" class="btn btn-secondary shrink-0">Browse</button>
+                  </div>
+                </div>
+                <div>
+                  <label class="label" for="setting-delay">Default delay (ms)</label>
+                  <input id="setting-delay" class="input" type="number" min="250" max="10000" step="250" />
+                </div>
+                <div>
+                  <label class="label" for="setting-concurrency">Default threads (1–5)</label>
+                  <input id="setting-concurrency" class="input" type="number" min="1" max="5" />
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-3 mt-4">
+                <button id="save-settings" class="btn btn-primary">Save Settings</button>
+                <button id="test-engines" class="btn btn-secondary">Test Engines</button>
+                <span id="settings-status" class="text-xs text-slate-500"></span>
+              </div>
+            </div>
+
+            <div class="panel p-5">
+              <h2 class="font-semibold mb-1">Component status</h2>
+              <p class="text-xs text-slate-400 mb-4">Python runs the secret engine and brute-force controller. Java runs the parallel login worker. Rust is the Tauri backend.</p>
+              <div id="engine-status" class="space-y-2 text-sm"></div>
+              <div id="app-info" class="mt-4 text-[11px] text-slate-500 leading-relaxed"></div>
+            </div>
+
+            <div class="panel p-5">
+              <h2 class="font-semibold mb-1">Legal &amp; safety</h2>
+              <p class="text-xs text-slate-400 leading-relaxed">LeakForce is an educational tool. Use it only on systems you own or have explicit written permission to test. Unauthorized scanning or login attempts may violate computer misuse laws. The brute-force module deliberately stops on lockout/rate-limit signals and does not bypass CAPTCHAs.</p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Live log -->
+        <div id="log-panel" class="h-44 shrink-0 border-t border-slate-800 bg-panel2 flex flex-col">
+          <div class="h-8 shrink-0 px-4 flex items-center justify-between border-b border-slate-800/80">
+            <div class="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-400">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot"></span>
+              Live log
+              <span id="log-count" class="text-slate-600 font-mono normal-case tracking-normal">0</span>
+            </div>
+            <button id="clear-log" class="text-[10px] uppercase tracking-wider text-slate-500 hover:text-slate-300">Clear</button>
+          </div>
+          <div id="log" class="flex-1 overflow-y-auto scroll-thin px-4 py-2 font-mono text-[11px] leading-5"></div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Developer credit -->
+    <footer class="h-7 shrink-0 border-t border-slate-800 bg-panel2 flex items-center justify-center gap-2 text-[10px] text-slate-500">
+      <span>Developer: <span class="text-slate-300 font-medium">ctf_shubh</span></span>
+      <span class="text-slate-700">•</span>
+      <span>GitHub: <span class="text-emerald-400/80">shubhamkowachi390-gif</span></span>
+    </footer>
+
+    <div id="toasts" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-[360px] max-w-[calc(100vw-2rem)]"></div>
+    <script src="main.js" defer></script>
+  </body>
+</html>

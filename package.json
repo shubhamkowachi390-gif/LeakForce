@@ -1,0 +1,16 @@
+{
+  "name": "leakforce",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LeakForce v1.0 - authorized lab security scanner",
+  "scripts": {
+    "tailwind": "tailwindcss -i ./src/tailwind.css -o ./src/styles.css --minify",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "tailwindcss": "^3.4.17"
+  }
+}

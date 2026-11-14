@@ -1,0 +1,1023 @@
+use crate::models::{compute_score, FileCheck, Finding, ScanReport};
+use futures::{stream, StreamExt};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use serde::Deserialize;
+use serde_json::json;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+use tokio::net::TcpStream;
+use url::Url;
+use uuid::Uuid;
+
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+    (KHTML, like Gecko) Chrome/124.0 Safari/537.36 LeakForce/1.0 (authorized lab testing)";
+
+const SENSITIVE_PATHS: &[&str] = &[
+    "/.env",
+    "/.git/config",
+    "/.git/HEAD",
+    "/config.php",
+    "/wp-config.php",
+    "/backup.zip",
+    "/backup.sql",
+    "/db.sql",
+    "/.bak",
+    "/admin/",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/.DS_Store",
+    "/package.json",
+    "/docker-compose.yml",
+];
+
+const DB_PORTS: &[(u16, &str)] = &[
+    (27017, "MongoDB"),
+    (6379, "Redis"),
+    (9200, "Elasticsearch"),
+    (3306, "MySQL"),
+    (5432, "PostgreSQL"),
+];
+
+#[derive(Clone, Debug)]
+pub struct ScanOptions {
+    pub python: String,
+    pub engine_script: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct Fetched {
+    status: u16,
+    final_url: String,
+    content_type: String,
+    body: Vec<u8>,
+    len: usize,
+}
+
+#[derive(Deserialize)]
+struct PySecretOutput {
+    #[serde(default)]
+    findings: Vec<PyFinding>,
+    #[serde(default)]
+    scanned_files: usize,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PyFinding {
+    severity: String,
+    title: String,
+    detail: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    snippet: Option<String>,
+    #[serde(default)]
+    masked: Option<String>,
+    #[serde(default)]
+    raw: Option<String>,
+}
+
+fn normalize_target(input: &str) -> Result<Url, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Please enter a domain or URL.".to_string());
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return Err("The target contains spaces. Enter a single domain or URL.".to_string());
+    }
+    let with_scheme = if trimmed.to_lowercase().starts_with("http://")
+        || trimmed.to_lowercase().starts_with("https://")
+    {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let mut url = Url::parse(&with_scheme).map_err(|error| format!("Invalid URL: {error}"))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("Only http:// and https:// targets are supported.".to_string());
+    }
+    if url.host_str().unwrap_or("").is_empty() {
+        return Err("The URL does not contain a valid host.".to_string());
+    }
+    url.set_fragment(None);
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    Ok(url)
+}
+
+async fn fetch_limited(client: &Client, url: &str, max_bytes: usize) -> Result<Fetched, String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let final_url = response.url().to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let declared = response.content_length().unwrap_or(0) as usize;
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        let remaining = max_bytes.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(chunk.len());
+        body.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            break;
+        }
+    }
+
+    let len = if declared > 0 { declared } else { body.len() };
+    Ok(Fetched {
+        status,
+        final_url,
+        content_type,
+        body,
+        len,
+    })
+}
+
+fn short_content_type(content_type: &str) -> &str {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("unknown")
+        .trim()
+}
+
+fn looks_like_soft_404(fetched: &Fetched, baseline: &Option<Fetched>) -> bool {
+    let Some(baseline) = baseline else {
+        return false;
+    };
+    if baseline.status != 200 || fetched.status != 200 {
+        return false;
+    }
+    let baseline_type = short_content_type(&baseline.content_type);
+    let target_type = short_content_type(&fetched.content_type);
+    if !baseline_type.is_empty() && baseline_type == target_type {
+        let difference = (baseline.len as i64 - fetched.len as i64).abs();
+        if baseline.len > 0 && difference <= 32 {
+            return true;
+        }
+        if !baseline.body.is_empty()
+            && !fetched.body.is_empty()
+            && baseline.body == fetched.body
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn severity_for_path(path: &str) -> &'static str {
+    match path {
+        "/.env" => "Critical",
+        "/.git/config" | "/.git/HEAD" => "Critical",
+        "/wp-config.php" => "Critical",
+        "/backup.sql" | "/db.sql" => "Critical",
+        "/backup.zip" => "High",
+        "/config.php" => "High",
+        "/docker-compose.yml" => "High",
+        "/.DS_Store" => "Medium",
+        "/.bak" => "Medium",
+        "/admin/" => "Medium",
+        "/package.json" => "Low",
+        "/robots.txt" | "/sitemap.xml" => "Info",
+        _ => "Low",
+    }
+}
+
+fn file_detail(status: u16, content_type: &str, len: usize, soft_404: bool) -> String {
+    let mut detail = format!(
+        "HTTP {} · {} · {} bytes",
+        status,
+        if content_type.is_empty() {
+            "unknown type"
+        } else {
+            short_content_type(content_type)
+        },
+        len
+    );
+    if soft_404 {
+        detail.push_str(" · ignored as a soft-404 response");
+    }
+    detail
+}
+
+fn make_file_finding(path: &str, url: &str, status: u16) -> Finding {
+    let severity = severity_for_path(path);
+    let title = if path.ends_with('/') {
+        format!("Exposed directory: {path}")
+    } else {
+        format!("Exposed file: {path}")
+    };
+    Finding {
+        id: Uuid::new_v4().to_string(),
+        module: "sensitive".to_string(),
+        kind: "file".to_string(),
+        severity: severity.to_string(),
+        title: title.clone(),
+        detail: format!("HTTP {status}"),
+        url: Some(url.to_string()),
+        status: Some(status),
+        copy: format!("[{severity}] {title} — {url} (HTTP {status})"),
+        ..Default::default()
+    }
+}
+
+fn make_port_finding(host: &str, port: u16, service: &str, open: bool) -> Finding {
+    let (severity, state, note) = if open {
+        (
+            "Medium",
+            "is open",
+            "TCP connection succeeded. No login attempt was made.",
+        )
+    } else {
+        ("Info", "is closed", "No TCP connection within 3 seconds.")
+    };
+    let title = format!("Port {port} ({service}) {state}");
+    Finding {
+        id: Uuid::new_v4().to_string(),
+        module: "port".to_string(),
+        kind: "port".to_string(),
+        severity: severity.to_string(),
+        title: title.clone(),
+        detail: format!("{host}:{port} · {note}"),
+        url: None,
+        status: None,
+        copy: format!("[{severity}] {title} — {host}:{port}"),
+        ..Default::default()
+    }
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "Critical" => 0,
+        "High" => 1,
+        "Medium" => 2,
+        "Low" => 3,
+        _ => 4,
+    }
+}
+
+fn parse_robots(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_lowercase();
+        if key != "disallow" && key != "allow" {
+            continue;
+        }
+        let path = value.trim();
+        if path.is_empty() || path == "/" {
+            continue;
+        }
+        if path.contains('*') || path.contains('$') {
+            continue;
+        }
+        if let Ok(url) = Url::parse(path) {
+            let parsed = url.path().to_string();
+            if !parsed.is_empty() && parsed != "/" {
+                paths.push(parsed);
+            }
+        } else if path.starts_with('/') {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+fn parse_sitemap(text: &str, base: &Url) -> Vec<String> {
+    let regex = regex::Regex::new(r"(?is)<loc>\s*([^<\s]+)\s*</loc>").unwrap();
+    let mut paths = Vec::new();
+    for capture in regex.captures_iter(text) {
+        let location = capture.get(1).map(|m| m.as_str()).unwrap_or("");
+        if let Ok(url) = Url::parse(location) {
+            if url.host_str() == base.host_str() {
+                let path = url.path().to_string();
+                if path != "/" && !path.is_empty() {
+                    paths.push(path);
+                }
+            }
+        } else if location.starts_with('/') {
+            paths.push(location.to_string());
+        }
+    }
+    paths
+}
+
+fn is_static_asset(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let extension = lower.rsplit('.').next().unwrap_or("");
+    matches!(
+        extension,
+        "css"
+            | "js"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "svg"
+            | "ico"
+            | "woff"
+            | "woff2"
+            | "ttf"
+            | "map"
+            | "webp"
+            | "mp4"
+            | "avi"
+            | "mov"
+    )
+}
+
+/// Extract same-origin script URLs and inline scripts from a page.
+///
+/// scraper's `Html` document uses non-Send tendril buffers, so parsing happens
+/// in this synchronous helper. The async scan future only receives Strings and
+/// JSON values, which keeps it Send for Tauri.
+fn extract_scripts(
+    html: &str,
+    page_url: &str,
+    page_host: &str,
+    origin: &str,
+) -> (Vec<String>, Vec<serde_json::Value>) {
+    let mut script_urls: Vec<String> = Vec::new();
+    let mut inline_files: Vec<serde_json::Value> = Vec::new();
+
+    let Ok(selector) = Selector::parse("script") else {
+        return (script_urls, inline_files);
+    };
+
+    let document = Html::parse_document(html);
+    let mut seen_scripts: HashSet<String> = HashSet::new();
+    let mut inline_count = 0usize;
+
+    for element in document.select(&selector) {
+        if let Some(src) = element.value().attr("src") {
+            let src = src.trim();
+            if src.is_empty() {
+                continue;
+            }
+            let Ok(base) = Url::parse(page_url) else {
+                continue;
+            };
+            let Ok(resolved) = base.join(src) else {
+                continue;
+            };
+            if resolved.host_str().unwrap_or("").to_lowercase() != page_host {
+                continue;
+            }
+            let mut cleaned = resolved;
+            cleaned.set_fragment(None);
+            let cleaned = cleaned.to_string();
+            if seen_scripts.insert(cleaned.clone()) {
+                script_urls.push(cleaned);
+            }
+        } else {
+            let text = element.text().collect::<String>();
+            if text.trim().len() >= 20 && inline_count < 10 {
+                inline_count += 1;
+                inline_files.push(json!({
+                    "url": origin,
+                    "name": format!("inline-script-{inline_count}.js"),
+                    "content": text,
+                }));
+            }
+        }
+    }
+
+    script_urls.truncate(20);
+    (script_urls, inline_files)
+}
+
+async fn run_python_secret_scan<F>(
+    options: &ScanOptions,
+    files: &[serde_json::Value],
+    errors: &mut Vec<String>,
+    log: &F,
+) -> Vec<Finding>
+where
+    F: Fn(&str, &str) + Send + Sync,
+{
+    let Some(script) = options.engine_script.as_ref() else {
+        errors.push("Python secret engine path is not configured.".to_string());
+        log("error", "Python secret engine path is not configured.");
+        return Vec::new();
+    };
+    if !script.is_file() {
+        errors.push(format!(
+            "Python secret engine not found at {}",
+            script.display()
+        ));
+        log(
+            "error",
+            &format!("Python secret engine not found: {}", script.display()),
+        );
+        return Vec::new();
+    }
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    let unique = Uuid::new_v4().to_string();
+    let temp = std::env::temp_dir();
+    let input_path = temp.join(format!("leakforce-js-{unique}.json"));
+    let output_path = temp.join(format!("leakforce-secrets-{unique}.json"));
+
+    let payload = json!({ "files": files });
+    if let Err(error) = tokio::fs::write(
+        &input_path,
+        serde_json::to_vec(&payload).unwrap_or_default(),
+    )
+    .await
+    {
+        errors.push(format!("Could not write secret-engine input: {error}"));
+        return Vec::new();
+    }
+
+    let mut command = tokio::process::Command::new(&options.python);
+    command
+        .arg(script)
+        .arg("secret-scan")
+        .arg("--input")
+        .arg(&input_path)
+        .arg("--output")
+        .arg(&output_path)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        command.creation_flags(0x08000000);
+    }
+
+    log(
+        "info",
+        &format!(
+            "Running Python secret engine on {} JavaScript file(s)...",
+            files.len()
+        ),
+    );
+
+    let output = match tokio::time::timeout(Duration::from_secs(120), command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            errors.push(format!("Could not start Python engine: {error}"));
+            log("error", &format!("Could not start Python engine: {error}"));
+            let _ = tokio::fs::remove_file(&input_path).await;
+            return Vec::new();
+        }
+        Err(_) => {
+            errors.push("Python secret engine timed out after 120 seconds.".to_string());
+            log("error", "Python secret engine timed out after 120 seconds.");
+            let _ = tokio::fs::remove_file(&input_path).await;
+            return Vec::new();
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.lines().next().unwrap_or("unknown error").trim();
+        errors.push(format!("Python secret engine failed: {message}"));
+        log(
+            "error",
+            &format!("Python secret engine failed: {message}"),
+        );
+        let _ = tokio::fs::remove_file(&input_path).await;
+        let _ = tokio::fs::remove_file(&output_path).await;
+        return Vec::new();
+    }
+
+    let parsed = match tokio::fs::read_to_string(&output_path).await {
+        Ok(text) => serde_json::from_str::<PySecretOutput>(&text),
+        Err(error) => {
+            errors.push(format!("Could not read Python engine output: {error}"));
+            log(
+                "error",
+                &format!("Could not read Python engine output: {error}"),
+            );
+            let _ = tokio::fs::remove_file(&input_path).await;
+            return Vec::new();
+        }
+    };
+
+    let _ = tokio::fs::remove_file(&input_path).await;
+    let _ = tokio::fs::remove_file(&output_path).await;
+
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            errors.push(format!("Invalid Python engine output: {error}"));
+            log(
+                "error",
+                &format!("Invalid Python engine output: {error}"),
+            );
+            return Vec::new();
+        }
+    };
+
+    if let Some(error) = &parsed.error {
+        errors.push(format!("Python secret engine: {error}"));
+        log("warning", &format!("Python secret engine: {error}"));
+    }
+
+    let mut findings = Vec::new();
+    let mut seen = HashSet::new();
+    for item in parsed.findings {
+        let key = (
+            item.title.clone(),
+            item.masked.clone().unwrap_or_default(),
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        let copy = format!(
+            "[{}] {} — {} — {}:{}",
+            item.severity,
+            item.title,
+            item.masked.clone().unwrap_or_default(),
+            item.file.clone().unwrap_or_default(),
+            item.line.unwrap_or(0)
+        );
+        findings.push(Finding {
+            id: Uuid::new_v4().to_string(),
+            module: "secret".to_string(),
+            kind: "secret".to_string(),
+            severity: item.severity,
+            title: item.title,
+            detail: item.detail,
+            url: item.url,
+            status: None,
+            file: item.file,
+            line: item.line,
+            snippet: item.snippet,
+            masked: item.masked,
+            raw: item.raw,
+            copy,
+        });
+    }
+
+    log(
+        "success",
+        &format!(
+            "Secret engine scanned {} file(s) and found {} secret(s).",
+            parsed.scanned_files,
+            findings.len()
+        ),
+    );
+    findings
+}
+
+/// Run a complete sensitive-information scan.
+pub async fn scan_target<F>(
+    target: &str,
+    options: &ScanOptions,
+    log: F,
+) -> Result<ScanReport, String>
+where
+    F: Fn(&str, &str) + Send + Sync,
+{
+    let started = Instant::now();
+    let started_at = crate::storage::now_rfc3339();
+    let url = normalize_target(target)?;
+    let origin = url.origin().ascii_serialization();
+    let host = url.host_str().unwrap_or("").to_string();
+
+    log("info", &format!("Target normalized: {origin}"));
+    log(
+        "info",
+        "Starting sensitive-file, JavaScript-secret and database-port checks.",
+    );
+
+    let client = Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|error| format!("Could not create HTTP client: {error}"))?;
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut checks: Vec<FileCheck> = Vec::new();
+
+    // --- Soft-404 baseline ------------------------------------------------
+    let baseline_url = format!(
+        "{origin}/leakforce-random-{}.txt",
+        &Uuid::new_v4().simple().to_string()[..10]
+    );
+    let baseline = match fetch_limited(&client, &baseline_url, 65_536).await {
+        Ok(fetched) => {
+            log(
+                "info",
+                &format!(
+                    "Soft-404 baseline: HTTP {} ({} bytes).",
+                    fetched.status, fetched.len
+                ),
+            );
+            Some(fetched)
+        }
+        Err(error) => {
+            log(
+                "warning",
+                &format!("Soft-404 baseline request failed: {error}"),
+            );
+            None
+        }
+    };
+
+    // --- Fixed sensitive paths -------------------------------------------
+    let path_list: Vec<(usize, String)> = SENSITIVE_PATHS
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (index, path.to_string()))
+        .collect();
+
+    let mut probes: Vec<(usize, String, Result<Fetched, String>)> =
+        stream::iter(path_list)
+            .map(|(index, path)| {
+                let client = client.clone();
+                let target_url = format!("{origin}{path}");
+                async move {
+                    let result = fetch_limited(&client, &target_url, 65_536).await;
+                    (index, path, result)
+                }
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+    probes.sort_by_key(|(index, _, _)| *index);
+
+    log(
+        "info",
+        &format!("Checked {} known sensitive paths.", SENSITIVE_PATHS.len()),
+    );
+
+    let mut robots_body: Option<String> = None;
+    let mut sitemap_body: Option<String> = None;
+
+    for (_, path, result) in probes {
+        let target_url = format!("{origin}{path}");
+        match result {
+            Ok(fetched) => {
+                let soft_404 = looks_like_soft_404(&fetched, &baseline);
+                let found = (fetched.status == 200 || fetched.status == 206) && !soft_404;
+                let detail =
+                    file_detail(fetched.status, &fetched.content_type, fetched.len, soft_404);
+                checks.push(FileCheck {
+                    path: path.clone(),
+                    url: target_url.clone(),
+                    status: Some(fetched.status),
+                    found,
+                    detail,
+                    source: "fixed".to_string(),
+                });
+                if found {
+                    log(
+                        "success",
+                        &format!("FOUND: {path} (HTTP {})", fetched.status),
+                    );
+                    if path == "/robots.txt" {
+                        robots_body = Some(String::from_utf8_lossy(&fetched.body).to_string());
+                    }
+                    if path == "/sitemap.xml" {
+                        sitemap_body = Some(String::from_utf8_lossy(&fetched.body).to_string());
+                    }
+                    if path != "/robots.txt" && path != "/sitemap.xml" {
+                        findings.push(make_file_finding(&path, &target_url, fetched.status));
+                    }
+                }
+            }
+            Err(error) => {
+                checks.push(FileCheck {
+                    path: path.clone(),
+                    url: target_url,
+                    status: None,
+                    found: false,
+                    detail: format!("Request failed: {error}"),
+                    source: "fixed".to_string(),
+                });
+            }
+        }
+    }
+
+    // --- robots.txt / sitemap.xml hidden paths ---------------------------
+    let mut discovered: Vec<(String, String)> = Vec::new();
+    let mut seen_paths: HashSet<String> = SENSITIVE_PATHS.iter().map(|p| p.to_string()).collect();
+
+    if let Some(body) = &robots_body {
+        let paths = parse_robots(body);
+        log(
+            "info",
+            &format!("robots.txt disclosed {} path(s).", paths.len()),
+        );
+        for path in paths {
+            if seen_paths.insert(path.clone()) {
+                discovered.push((path, "robots.txt".to_string()));
+            }
+        }
+    }
+    if let Some(body) = &sitemap_body {
+        let paths = parse_sitemap(body, &url);
+        log(
+            "info",
+            &format!("sitemap.xml disclosed {} path(s).", paths.len()),
+        );
+        for path in paths {
+            if seen_paths.insert(path.clone()) {
+                discovered.push((path, "sitemap.xml".to_string()));
+            }
+        }
+    }
+
+    let discovered: Vec<(String, String)> = discovered
+        .into_iter()
+        .filter(|(path, _)| !is_static_asset(path) && path != "/" && path.len() < 300)
+        .take(25)
+        .collect();
+
+    if !discovered.is_empty() {
+        log(
+            "info",
+            &format!("Checking {} disclosed path(s)...", discovered.len()),
+        );
+        let probes: Vec<(String, String, Result<Fetched, String>)> =
+            stream::iter(discovered.clone())
+                .map(|(path, source)| {
+                    let client = client.clone();
+                    let target_url = format!("{origin}{path}");
+                    async move {
+                        let result = fetch_limited(&client, &target_url, 65_536).await;
+                        (path, source, result)
+                    }
+                })
+                .buffer_unordered(8)
+                .collect()
+                .await;
+
+        for (path, source, result) in probes {
+            let target_url = format!("{origin}{path}");
+            match result {
+                Ok(fetched) => {
+                    let soft_404 = looks_like_soft_404(&fetched, &baseline);
+                    let found = (fetched.status == 200 || fetched.status == 206) && !soft_404;
+                    checks.push(FileCheck {
+                        path: path.clone(),
+                        url: target_url.clone(),
+                        status: Some(fetched.status),
+                        found,
+                        detail: file_detail(
+                            fetched.status,
+                            &fetched.content_type,
+                            fetched.len,
+                            soft_404,
+                        ),
+                        source: source.clone(),
+                    });
+                    if found {
+                        let severity = "Info";
+                        let title = format!("Discovered path: {path}");
+                        findings.push(Finding {
+                            id: Uuid::new_v4().to_string(),
+                            module: "sensitive".to_string(),
+                            kind: "discovered".to_string(),
+                            severity: severity.to_string(),
+                            title: title.clone(),
+                            detail: format!(
+                                "Listed in {source} · HTTP {}",
+                                fetched.status
+                            ),
+                            url: Some(target_url.clone()),
+                            status: Some(fetched.status),
+                            copy: format!("[INFO] {title} — {target_url} (HTTP {})", fetched.status),
+                            ..Default::default()
+                        });
+                        log(
+                            "info",
+                            &format!("Discovered path responded: {path}"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    checks.push(FileCheck {
+                        path: path.clone(),
+                        url: target_url,
+                        status: None,
+                        found: false,
+                        detail: format!("Request failed: {error}"),
+                        source,
+                    });
+                }
+            }
+        }
+    }
+
+    // --- JavaScript files + Python secret engine -------------------------
+    let mut js_files: Vec<serde_json::Value> = Vec::new();
+    match fetch_limited(&client, url.as_str(), 2_097_152).await {
+        Ok(page) => {
+            let html = String::from_utf8_lossy(&page.body).to_string();
+            let page_host = url.host_str().unwrap_or("").to_lowercase();
+            let (script_urls, inline_files) =
+                extract_scripts(&html, &page.final_url, &page_host, url.as_str());
+            let inline_count = inline_files.len();
+            js_files.extend(inline_files);
+
+            log(
+                "info",
+                &format!(
+                    "Found {} same-origin script(s) and {} inline script(s).",
+                    script_urls.len(),
+                    inline_count
+                ),
+            );
+
+            let downloads: Vec<(String, Result<Fetched, String>)> = stream::iter(script_urls)
+                .map(|script_url| {
+                    let client = client.clone();
+                    async move {
+                        let result = fetch_limited(&client, &script_url, 2_097_152).await;
+                        (script_url, result)
+                    }
+                })
+                .buffer_unordered(6)
+                .collect()
+                .await;
+
+            for (script_url, result) in downloads {
+                match result {
+                    Ok(fetched) => {
+                        if fetched.status == 200 {
+                            let content = String::from_utf8_lossy(&fetched.body).to_string();
+                            if !content.trim().is_empty() {
+                                let name = Url::parse(&script_url)
+                                    .ok()
+                                    .and_then(|parsed| {
+                                        parsed
+                                            .path_segments()
+                                            .and_then(|mut segments| segments.next_back().map(str::to_string))
+                                    })
+                                    .unwrap_or_else(|| "script.js".to_string());
+                                js_files.push(json!({
+                                    "url": script_url,
+                                    "name": name,
+                                    "content": content,
+                                }));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        log(
+                            "warning",
+                            &format!("Could not download {script_url}: {error}"),
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            errors.push(format!("Could not fetch page for JavaScript analysis: {error}"));
+            log(
+                "warning",
+                &format!("Could not fetch page for JavaScript analysis: {error}"),
+            );
+        }
+    }
+
+    if !js_files.is_empty() {
+        let secret_findings =
+            run_python_secret_scan(options, &js_files, &mut errors, &log).await;
+        findings.extend(secret_findings);
+    } else {
+        log("info", "No JavaScript files to scan for secrets.");
+    }
+
+    // --- Open database ports (no authentication attempted) ---------------
+    if host.is_empty() {
+        errors.push("Could not determine host for port scan.".to_string());
+    } else {
+        match tokio::net::lookup_host((host.as_str(), 80)).await {
+            Ok(_) => {
+                log(
+                    "info",
+                    "Checking common database ports (connect only, no login)...",
+                );
+                let mut tasks = Vec::new();
+                for (port, service) in DB_PORTS {
+                    let host = host.clone();
+                    let service = service.to_string();
+                    let port = *port;
+                    tasks.push(async move {
+                        let open = match tokio::time::timeout(
+                            Duration::from_secs(3),
+                            TcpStream::connect((host.as_str(), port)),
+                        )
+                        .await
+                        {
+                            Ok(Ok(_)) => true,
+                            _ => false,
+                        };
+                        (port, service, open)
+                    });
+                }
+                let results = futures::future::join_all(tasks).await;
+                let open_ports: Vec<String> = results
+                    .iter()
+                    .filter(|(_, _, open)| *open)
+                    .map(|(port, service, _)| format!("{service}:{port}"))
+                    .collect();
+                log(
+                    "info",
+                    &format!(
+                        "Port scan complete. Open: {}",
+                        if open_ports.is_empty() {
+                            "none".to_string()
+                        } else {
+                            open_ports.join(", ")
+                        }
+                    ),
+                );
+                for (port, service, open) in results {
+                    findings.push(make_port_finding(&host, port, &service, open));
+                }
+            }
+            Err(error) => {
+                errors.push(format!("Could not resolve host for port scan: {error}"));
+                log(
+                    "warning",
+                    &format!("Could not resolve host for port scan: {error}"),
+                );
+            }
+        }
+    }
+
+    findings.sort_by_key(|finding| severity_rank(&finding.severity));
+
+    let sensitive_found = findings
+        .iter()
+        .filter(|finding| {
+            finding.module == "sensitive"
+                && finding.kind == "file"
+                && finding.status == Some(200)
+        })
+        .count() as u32;
+    let secrets_found = findings
+        .iter()
+        .filter(|finding| finding.module == "secret")
+        .count() as u32;
+
+    let (score, score_breakdown) = compute_score(&findings, false);
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    let report = ScanReport {
+        id: Uuid::new_v4().to_string(),
+        target: origin.clone(),
+        started_at,
+        finished_at: crate::storage::now_rfc3339(),
+        duration_ms,
+        score,
+        score_breakdown,
+        sensitive_found,
+        secrets_found,
+        login_result: "Not tested".to_string(),
+        findings,
+        file_checks: checks,
+        errors,
+    };
+
+    log(
+        "success",
+        &format!(
+            "Scan complete in {:.1}s — Leak Score {}/100 · {} sensitive file(s) · {} secret(s).",
+            duration_ms as f64 / 1000.0,
+            score,
+            sensitive_found,
+            secrets_found
+        ),
+    );
+
+    Ok(report)
+}

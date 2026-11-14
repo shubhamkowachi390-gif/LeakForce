@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LeakForce",
+  "version": "1.0.0",
+  "identifier": "com.leakforce.app",
+  "build": {
+    "frontendDist": "../src",
+    "beforeBuildCommand": "npm run tailwind"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "LeakForce v1.0",
+        "width": 1366,
+        "height": 768,
+        "minWidth": 1100,
+        "minHeight": 680,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../python-engine/leakforce_engine.py": "python-engine/leakforce_engine.py",
+      "../java-worker/build/LeakForceWorker.jar": "java-worker/LeakForceWorker.jar",
+      "../wordlists/top100-passwords.txt": "wordlists/top100-passwords.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# Dependency folders
+node_modules/
+src-tauri/target/
+java-worker/build/classes/
+
+# Generated frontend CSS (built by npm run tailwind)
+src/styles.css
+
+# Temporary build helpers
+make-icon.ps1
+
+# Local test outputs
+test-lab/__pycache__/
+python-engine/__pycache__/
+*.pyc
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
