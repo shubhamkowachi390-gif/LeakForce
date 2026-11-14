@@ -1,19 +1,19 @@
-# LeakForce v1.0
+# 🕵️ LeakForce v1.0
 
-**A Windows desktop security-testing tool for learning bug bounty on your own lab targets.**
+**🔍 A Windows desktop security-testing tool for learning bug bounty on your own lab targets.**
 
 LeakForce checks a website for common exposed files, hard-coded secrets in JavaScript,
 open database ports, and (only with your confirmation) weak login passwords on lab sites.
-Everything runs locally on your PC. Nothing is uploaded anywhere.
+Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
 
-> **Legal warning:** Use LeakForce only on systems you own or have **written permission** to test.
-> Scanning or trying passwords on websites without permission can be a crime.
-> The brute-force module is locked behind a permission checkbox and the backend refuses to run
-> without that confirmation. It also stops automatically on lockout, HTTP 429, or CAPTCHA.
+> [!WARNING]
+> 🎓 **Educational purposes only.** LeakForce is built for learning and for testing **your own lab targets** or systems you have **written permission** to test. Scanning or trying passwords on websites without permission is illegal. 🚫
+>
+> 🛡️ The brute-force module is locked behind a permission checkbox, and the backend refuses to run without that confirmation. It also stops automatically on lockout, HTTP 429, or CAPTCHA. Hack your own lab, not other people's websites. ❤️
 
 ---
 
-## 1. What you get
+## 1. What you get 🧰
 
 | Module | What it does |
 |---|---|
@@ -23,7 +23,7 @@ Everything runs locally on your PC. Nothing is uploaded anywhere.
 | **Login Test (lab only)** | Auto-detects a standard HTML login form, tries the built-in default credentials and the top-100 password list (or your own wordlist such as `rockyou.txt`), and stops immediately on success, lockout, HTTP 429, or CAPTCHA. |
 | **Dashboard & Reports** | Leak Score 0-100, severity filters, search, copy buttons, live log, history of the last 20 runs, and TXT / JSON / HTML exports. |
 
-### How the score works (exactly the same in UI, TXT, JSON and HTML)
+### 🧮 How the score works (exactly the same in UI, TXT, JSON and HTML)
 
 | Finding | Points |
 |---|---|
@@ -39,9 +39,9 @@ all read that same value, so they can never disagree.
 
 ---
 
-## 2. Install and run (no coding needed)
+## 2. Install and run 🚀 (no coding needed)
 
-### Option A - Use the built app (recommended)
+### 📦 Option A - Use the built app (recommended)
 
 1. Install the app with the installer:
    `src-tauri\target\release\bundle\nsis\LeakForce_1.0.0_x64-setup.exe`
@@ -60,7 +60,7 @@ all read that same value, so they can never disagree.
 > If you move the portable `leakforce.exe` somewhere else, keep the `python-engine`,
 > `java-worker` and `wordlists` folders next to it (the installer already does this).
 
-### Option B - Build from source
+### 🛠️ Option B - Build from source
 
 Requirements: Windows 10/11 x64, Node.js 18+, Rust with the MSVC toolchain,
 JDK 17+, Python 3.9+, Visual Studio Build Tools (C++ workload), WebView2 runtime.
@@ -88,7 +88,7 @@ npm run dev
 
 ---
 
-## 3. Your first test (safe, fully local)
+## 3. Your first test 🧪 (safe, fully local)
 
 The project ships a local test lab. It creates fake vulnerable websites on your own PC only.
 
@@ -113,7 +113,7 @@ The project ships a local test lab. It creates fake vulnerable websites on your 
 
 Press `Ctrl+C` in the lab window to stop the mock servers.
 
-### Login test defaults
+### 🔑 Login test defaults
 
 - Default credential pairs (tried first):
   `admin/admin`, `admin/12345`, `admin/password`, `root/root`, `test/test`, `user/user`
@@ -122,7 +122,7 @@ Press `Ctrl+C` in the lab window to stop the mock servers.
   Very large lists are capped at 200,000 entries for safety.
 - Default delay: **1000 ms** (1 request/second). Minimum: 250 ms. Maximum threads: **5**.
 
-### Success output
+### ✅ Success output
 
 When a password works, the tool shows only:
 
@@ -135,7 +135,7 @@ actually succeeded (and even then only the working pair is stored, as the lab pr
 
 ---
 
-## 4. Reports and history
+## 4. Reports and history 📊
 
 - Exports go to: `%USERPROFILE%\Downloads\LeakForce`
 - File names look like: `leakforce-127.0.0.1-8381-20260101-120000.txt`
@@ -153,7 +153,7 @@ green and blue accents.
 
 ---
 
-## 5. Project structure
+## 5. Project structure 🗂️
 
 ```
 LeakForce/
@@ -175,7 +175,7 @@ LeakForce/
   TESTING.md            tested checklist and results
 ```
 
-### Division of work (no duplicated logic)
+### 🧩 Division of work (no duplicated logic)
 
 - **Rust/Tauri** owns the app, HTTP file checks, port checks, scoring, storage and reports.
 - **Python** owns secret regex detection/masking and the brute-force decision logic
@@ -186,7 +186,7 @@ LeakForce/
 
 ---
 
-## 6. Troubleshooting
+## 6. Troubleshooting 🧯
 
 | Problem | Fix |
 |---|---|
@@ -202,7 +202,7 @@ LeakForce/
 
 ---
 
-## 7. Safety limits built into the tool
+## 7. Safety limits built into the tool 🛡️
 
 - Brute force cannot start without the permission checkbox **and** a backend `authorized` flag.
 - Default speed is 1 request/second; the UI cannot exceed 5 parallel threads; the backend clamps
@@ -218,7 +218,7 @@ LeakForce/
 
 ---
 
-## 8. Uninstall
+## 8. Uninstall 🧹
 
 - Uninstall **LeakForce** from Windows Settings → Apps.
 - Optionally delete `%APPDATA%\com.leakforce.app` (history/settings) and
@@ -226,6 +226,8 @@ LeakForce/
 
 ---
 
-**LeakForce v1.0** - built for learning. Hack your own lab, not other people's websites.
+**LeakForce v1.0** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
 
 **Developer:** ctf_shubh · **GitHub:** [shubhamkowachi390-gif](https://github.com/shubhamkowachi390-gif)
+
+> 🎓 **Educational purposes only.** Use LeakForce only on systems you own or have written permission to test.
