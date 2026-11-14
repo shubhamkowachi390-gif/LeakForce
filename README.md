@@ -1,5 +1,7 @@
 # 🕵️ LeakForce v1.0
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **🔍 A Windows desktop security-testing tool for learning bug bounty on your own lab targets.**
 
 LeakForce checks a website for common exposed files, hard-coded secrets in JavaScript,
@@ -224,10 +226,14 @@ LeakForce/
 - Optionally delete `%APPDATA%\com.leakforce.app` (history/settings) and
   `Downloads\LeakForce` (reports).
 
+## 9. License 📄
+
+LeakForce is released under the **MIT License**. You are free to use, modify, and share it, as long as the copyright notice and license text are included. See [LICENSE](LICENSE) for the full text.
+
 ---
 
 **LeakForce v1.0** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
 
-**Developer:** ctf_shubh · **GitHub:** [shubhamkowachi390-gif](https://github.com/shubhamkowachi390-gif)
+**Developer:** ctf_shubh · **GitHub:** [shubhamkowachi390-gif](https://github.com/shubhamkowachi390-gif) · **License:** MIT 📄
 
 > 🎓 **Educational purposes only.** Use LeakForce only on systems you own or have written permission to test.

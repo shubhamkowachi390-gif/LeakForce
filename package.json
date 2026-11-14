@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "LeakForce v1.0 - authorized lab security scanner",
+  "license": "MIT",
   "scripts": {
     "tailwind": "tailwindcss -i ./src/tailwind.css -o ./src/styles.css --minify",
     "tauri": "tauri",
