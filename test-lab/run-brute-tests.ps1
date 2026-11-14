@@ -10,7 +10,7 @@ $lab = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $lab
 $engine = Join-Path $root 'python-engine\leakforce_engine.py'
 $jar = Join-Path $root 'java-worker\build\LeakForceWorker.jar'
-$wordlist = Join-Path $root 'wordlists\top100-passwords.txt'
+$wordlist = Join-Path $root 'wordlists\top1000-passwords.txt'
 $temp = Join-Path $env:TEMP ('leakforce-brute-tests-' + [Guid]::NewGuid().ToString('N'))
 
 if (-not (Test-Path $jar)) { throw "Java worker JAR missing: $jar. Run java-worker\build.ps1 first." }

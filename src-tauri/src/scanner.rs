@@ -41,10 +41,89 @@ const DB_PORTS: &[(u16, &str)] = &[
     (5432, "PostgreSQL"),
 ];
 
+/// Extra checks used only by Deep Scan. These are high-signal paths commonly
+/// forgotten in deployments; every request is still a normal HTTP GET.
+const DEEP_PATHS: &[&str] = &[
+    "/.env.local",
+    "/.env.production",
+    "/.env.development",
+    "/.env.backup",
+    "/.env.bak",
+    "/.git/",
+    "/.svn/",
+    "/.hg/",
+    "/config.json",
+    "/config.yml",
+    "/config.yaml",
+    "/settings.py",
+    "/local.settings.json",
+    "/appsettings.json",
+    "/web.config",
+    "/web.config.bak",
+    "/app.config",
+    "/config.php.bak",
+    "/wp-config.php.bak",
+    "/composer.json",
+    "/composer.lock",
+    "/package-lock.json",
+    "/yarn.lock",
+    "/Dockerfile",
+    "/docker-compose.yaml",
+    "/backup.tar.gz",
+    "/backup.tar",
+    "/backup.7z",
+    "/backup.rar",
+    "/database.sql",
+    "/dump.sql",
+    "/db.sql.gz",
+    "/phpinfo.php",
+    "/info.php",
+    "/server-status",
+    "/server-info",
+    "/actuator",
+    "/actuator/env",
+    "/actuator/health",
+    "/swagger.json",
+    "/swagger-ui.html",
+    "/openapi.json",
+    "/api/swagger.json",
+    "/api/openapi.json",
+    "/graphql",
+    "/.well-known/security.txt",
+    "/crossdomain.xml",
+    "/clientaccesspolicy.xml",
+    "/.htaccess",
+    "/.htpasswd",
+    "/id_rsa",
+    "/id_dsa",
+    "/.aws/credentials",
+    "/.npmrc",
+    "/.dockercfg",
+    "/.docker/config.json",
+];
+
+/// Extra ports checked only in Deep Scan. The check is connect-only; no
+/// authentication is attempted and no data is sent.
+const DEEP_PORTS: &[(u16, &str)] = &[
+    (1433, "MSSQL"),
+    (1521, "Oracle"),
+    (5672, "RabbitMQ"),
+    (5984, "CouchDB"),
+    (11211, "Memcached"),
+    (8500, "Consul"),
+    (2375, "Docker API"),
+    (9092, "Kafka"),
+    (8080, "HTTP alt"),
+    (8443, "HTTPS alt"),
+    (3000, "Dev server"),
+    (5000, "Dev server"),
+];
+
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
     pub python: String,
     pub engine_script: Option<PathBuf>,
+    pub deep_scan: bool,
 }
 
 #[derive(Clone)]
@@ -188,20 +267,86 @@ fn looks_like_soft_404(fetched: &Fetched, baseline: &Option<Fetched>) -> bool {
 }
 
 fn severity_for_path(path: &str) -> &'static str {
-    match path {
-        "/.env" => "Critical",
-        "/.git/config" | "/.git/HEAD" => "Critical",
-        "/wp-config.php" => "Critical",
-        "/backup.sql" | "/db.sql" => "Critical",
-        "/backup.zip" => "High",
-        "/config.php" => "High",
-        "/docker-compose.yml" => "High",
-        "/.DS_Store" => "Medium",
-        "/.bak" => "Medium",
-        "/admin/" => "Medium",
-        "/package.json" => "Low",
-        "/robots.txt" | "/sitemap.xml" => "Info",
-        _ => "Low",
+    let lower = path.to_ascii_lowercase();
+    if lower == "/.env"
+        || lower.starts_with("/.env.")
+        || lower.starts_with("/.git")
+        || lower == "/wp-config.php"
+        || lower == "/wp-config.php.bak"
+        || lower == "/backup.sql"
+        || lower == "/db.sql"
+        || lower == "/database.sql"
+        || lower == "/dump.sql"
+        || lower == "/db.sql.gz"
+        || lower == "/.htpasswd"
+        || lower == "/id_rsa"
+        || lower == "/id_dsa"
+        || lower == "/.aws/credentials"
+        || lower == "/.npmrc"
+        || lower == "/.dockercfg"
+        || lower == "/.docker/config.json"
+    {
+        "Critical"
+    } else if lower == "/.svn/"
+        || lower == "/.hg/"
+        || lower == "/config.json"
+        || lower == "/config.yml"
+        || lower == "/config.yaml"
+        || lower == "/settings.py"
+        || lower == "/local.settings.json"
+        || lower == "/appsettings.json"
+        || lower == "/web.config"
+        || lower == "/web.config.bak"
+        || lower == "/app.config"
+        || lower == "/config.php.bak"
+        || lower == "/backup.zip"
+        || lower == "/backup.tar.gz"
+        || lower == "/backup.tar"
+        || lower == "/backup.7z"
+        || lower == "/backup.rar"
+        || lower == "/phpinfo.php"
+        || lower == "/info.php"
+        || lower == "/server-status"
+        || lower == "/server-info"
+        || lower == "/actuator"
+        || lower == "/actuator/env"
+        || lower == "/actuator/health"
+        || lower == "/docker-compose.yml"
+        || lower == "/docker-compose.yaml"
+        || lower == "/config.php"
+    {
+        "High"
+    } else if lower == "/.DS_Store"
+        || lower == "/.bak"
+        || lower == "/admin/"
+        || lower == "/swagger.json"
+        || lower == "/swagger-ui.html"
+        || lower == "/openapi.json"
+        || lower == "/api/swagger.json"
+        || lower == "/api/openapi.json"
+        || lower == "/graphql"
+        || lower == "/.htaccess"
+        || lower == "/sitemap.xml.gz"
+        || lower == "/robots.txt.bak"
+    {
+        "Medium"
+    } else if lower == "/package.json"
+        || lower == "/package-lock.json"
+        || lower == "/composer.json"
+        || lower == "/composer.lock"
+        || lower == "/yarn.lock"
+        || lower == "/Dockerfile"
+        || lower == "/crossdomain.xml"
+        || lower == "/clientaccesspolicy.xml"
+    {
+        "Low"
+    } else if lower == "/robots.txt"
+        || lower == "/sitemap.xml"
+        || lower == "/.well-known/security.txt"
+    {
+        "Info"
+    } else {
+        "Low"
     }
 }
 
@@ -360,6 +505,7 @@ fn extract_scripts(
     page_url: &str,
     page_host: &str,
     origin: &str,
+    deep: bool,
 ) -> (Vec<String>, Vec<serde_json::Value>) {
     let mut script_urls: Vec<String> = Vec::new();
     let mut inline_files: Vec<serde_json::Value> = Vec::new();
@@ -371,6 +517,7 @@ fn extract_scripts(
     let document = Html::parse_document(html);
     let mut seen_scripts: HashSet<String> = HashSet::new();
     let mut inline_count = 0usize;
+    let max_inline = if deep { 20 } else { 10 };
 
     for element in document.select(&selector) {
         if let Some(src) = element.value().attr("src") {
@@ -395,7 +542,7 @@ fn extract_scripts(
             }
         } else {
             let text = element.text().collect::<String>();
-            if text.trim().len() >= 20 && inline_count < 10 {
+            if text.trim().len() >= 20 && inline_count < max_inline {
                 inline_count += 1;
                 inline_files.push(json!({
                     "url": origin,
@@ -406,8 +553,53 @@ fn extract_scripts(
         }
     }
 
-    script_urls.truncate(20);
+    script_urls.truncate(if deep { 40 } else { 20 });
     (script_urls, inline_files)
+}
+
+/// Find source-map URLs in a downloaded script. Only same-origin maps are
+/// collected, and the conventional `<script>.map` URL is tried as a fallback.
+fn collect_source_maps(
+    content: &str,
+    script_url: &str,
+    page_host: &str,
+    out: &mut HashSet<String>,
+) {
+    let Ok(base) = Url::parse(script_url) else {
+        return;
+    };
+    let Ok(regex) = regex::Regex::new(r#"(?i)sourceMappingURL\s*=\s*([^\s'"<>]+)"#) else {
+        return;
+    };
+    for capture in regex.captures_iter(content) {
+        let raw = capture.get(1).map(|m| m.as_str()).unwrap_or("").trim();
+        if raw.is_empty() || raw.starts_with("data:") {
+            continue;
+        }
+        if let Ok(mut resolved) = base.join(raw) {
+            if resolved
+                .host_str()
+                .unwrap_or("")
+                .eq_ignore_ascii_case(page_host)
+            {
+                resolved.set_fragment(None);
+                out.insert(resolved.to_string());
+            }
+        }
+    }
+
+    if let Ok(mut map_url) = Url::parse(script_url) {
+        let path = format!("{}.map", map_url.path());
+        map_url.set_path(&path);
+        map_url.set_fragment(None);
+        if map_url
+            .host_str()
+            .unwrap_or("")
+            .eq_ignore_ascii_case(page_host)
+        {
+            out.insert(map_url.to_string());
+        }
+    }
 }
 
 async fn run_python_secret_scan<F>(
@@ -606,12 +798,19 @@ where
     let url = normalize_target(target)?;
     let origin = url.origin().ascii_serialization();
     let host = url.host_str().unwrap_or("").to_string();
+    let deep = options.deep_scan;
 
     log("info", &format!("Target normalized: {origin}"));
     log(
         "info",
         "Starting sensitive-file, JavaScript-secret and database-port checks.",
     );
+    if deep {
+        log(
+            "warning",
+            "Deep scan enabled: extra paths, extra ports and JavaScript source maps. Make sure every target is in scope.",
+        );
+    }
 
     let client = Client::builder()
         .user_agent(USER_AGENT)
@@ -649,12 +848,20 @@ where
         }
     };
 
-    // --- Fixed sensitive paths -------------------------------------------
-    let path_list: Vec<(usize, String)> = SENSITIVE_PATHS
+    // --- Fixed sensitive paths (plus Deep Scan extras) --------------------
+    let mut paths: Vec<String> = SENSITIVE_PATHS
         .iter()
-        .enumerate()
-        .map(|(index, path)| (index, path.to_string()))
+        .map(|path| path.to_string())
         .collect();
+    if deep {
+        for path in DEEP_PATHS {
+            if !paths.iter().any(|existing| existing == path) {
+                paths.push((*path).to_string());
+            }
+        }
+    }
+    let total_paths = paths.len();
+    let path_list: Vec<(usize, String)> = paths.iter().cloned().enumerate().collect();
 
     let mut probes: Vec<(usize, String, Result<Fetched, String>)> =
         stream::iter(path_list)
@@ -673,7 +880,11 @@ where
 
     log(
         "info",
-        &format!("Checked {} known sensitive paths.", SENSITIVE_PATHS.len()),
+        &format!(
+            "Checked {} sensitive paths{}.",
+            total_paths,
+            if deep { " (deep scan)" } else { "" }
+        ),
     );
 
     let mut robots_body: Option<String> = None;
@@ -726,7 +937,7 @@ where
 
     // --- robots.txt / sitemap.xml hidden paths ---------------------------
     let mut discovered: Vec<(String, String)> = Vec::new();
-    let mut seen_paths: HashSet<String> = SENSITIVE_PATHS.iter().map(|p| p.to_string()).collect();
+    let mut seen_paths: HashSet<String> = paths.iter().cloned().collect();
 
     if let Some(body) = &robots_body {
         let paths = parse_robots(body);
@@ -756,7 +967,7 @@ where
     let discovered: Vec<(String, String)> = discovered
         .into_iter()
         .filter(|(path, _)| !is_static_asset(path) && path != "/" && path.len() < 300)
-        .take(25)
+        .take(if deep { 50 } else { 25 })
         .collect();
 
     if !discovered.is_empty() {
@@ -842,9 +1053,10 @@ where
             let html = String::from_utf8_lossy(&page.body).to_string();
             let page_host = url.host_str().unwrap_or("").to_lowercase();
             let (script_urls, inline_files) =
-                extract_scripts(&html, &page.final_url, &page_host, url.as_str());
+                extract_scripts(&html, &page.final_url, &page_host, url.as_str(), deep);
             let inline_count = inline_files.len();
             js_files.extend(inline_files);
+            let mut source_map_urls: HashSet<String> = HashSet::new();
 
             log(
                 "info",
@@ -881,6 +1093,14 @@ where
                                             .and_then(|mut segments| segments.next_back().map(str::to_string))
                                     })
                                     .unwrap_or_else(|| "script.js".to_string());
+                                if deep {
+                                    collect_source_maps(
+                                        &content,
+                                        &script_url,
+                                        &page_host,
+                                        &mut source_map_urls,
+                                    );
+                                }
                                 js_files.push(json!({
                                     "url": script_url,
                                     "name": name,
@@ -896,6 +1116,59 @@ where
                         );
                     }
                 }
+            }
+
+            if deep && !source_map_urls.is_empty() {
+                let map_urls: Vec<String> = source_map_urls.into_iter().take(12).collect();
+                log(
+                    "info",
+                    &format!(
+                        "Deep scan: checking {} JavaScript source map(s)...",
+                        map_urls.len()
+                    ),
+                );
+                let maps: Vec<(String, Result<Fetched, String>)> = stream::iter(map_urls)
+                    .map(|map_url| {
+                        let client = client.clone();
+                        async move {
+                            let result = fetch_limited(&client, &map_url, 3_145_728).await;
+                            (map_url, result)
+                        }
+                    })
+                    .buffer_unordered(6)
+                    .collect()
+                    .await;
+                let mut map_count = 0usize;
+                for (map_url, result) in maps {
+                    if let Ok(fetched) = result {
+                        if fetched.status == 200 {
+                            let content = String::from_utf8_lossy(&fetched.body).to_string();
+                            if !content.trim().is_empty() {
+                                map_count += 1;
+                                let name = Url::parse(&map_url)
+                                    .ok()
+                                    .and_then(|parsed| {
+                                        parsed
+                                            .path_segments()
+                                            .and_then(|mut segments| segments.next_back().map(str::to_string))
+                                    })
+                                    .unwrap_or_else(|| "source-map.map".to_string());
+                                js_files.push(json!({
+                                    "url": map_url,
+                                    "name": name,
+                                    "content": content,
+                                }));
+                            }
+                        }
+                    }
+                }
+                log(
+                    "info",
+                    &format!(
+                        "Deep scan: loaded {} source map(s) for secret analysis.",
+                        map_count
+                    ),
+                );
             }
         }
         Err(error) => {
@@ -921,15 +1194,23 @@ where
     } else {
         match tokio::net::lookup_host((host.as_str(), 80)).await {
             Ok(_) => {
+                let port_list: Vec<(u16, &str)> = if deep {
+                    DB_PORTS.iter().chain(DEEP_PORTS.iter()).copied().collect()
+                } else {
+                    DB_PORTS.to_vec()
+                };
                 log(
                     "info",
-                    "Checking common database ports (connect only, no login)...",
+                    &format!(
+                        "Checking {} {} port(s) (connect only, no login)...",
+                        port_list.len(),
+                        if deep { "database and development" } else { "common database" }
+                    ),
                 );
                 let mut tasks = Vec::new();
-                for (port, service) in DB_PORTS {
+                for (port, service) in port_list {
                     let host = host.clone();
                     let service = service.to_string();
-                    let port = *port;
                     tasks.push(async move {
                         let open = match tokio::time::timeout(
                             Duration::from_secs(3),

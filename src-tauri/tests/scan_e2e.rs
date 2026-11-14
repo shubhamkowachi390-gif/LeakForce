@@ -83,17 +83,22 @@ fn start_lab(port: u16, mode: &str, extra: &[&str]) -> LabServer {
     }
 }
 
-fn options() -> ScanOptions {
+fn options_with_deep(deep_scan: bool) -> ScanOptions {
     ScanOptions {
         python: "python".to_string(),
         engine_script: Some(engine_script()),
+        deep_scan,
     }
 }
 
-async fn run_scan(target: &str) -> leakforce_lib::models::ScanReport {
-    scan_target(target, &options(), |_level: &str, _message: &str| {})
+async fn run_scan_with(target: &str, deep_scan: bool) -> leakforce_lib::models::ScanReport {
+    scan_target(target, &options_with_deep(deep_scan), |_level: &str, _message: &str| {})
         .await
         .expect("scan should succeed")
+}
+
+async fn run_scan(target: &str) -> leakforce_lib::models::ScanReport {
+    run_scan_with(target, false).await
 }
 
 fn serialized(report: &leakforce_lib::models::ScanReport) -> String {
@@ -222,6 +227,53 @@ async fn benign_lab_scores_zero() {
             .iter()
             .map(|finding| finding.title.clone())
             .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+#[ignore = "starts local mock servers; run explicitly"]
+async fn deep_scan_finds_extra_paths_and_source_map_secrets() {
+    let _lab = start_lab(18385, "success", &[]);
+    let report = run_scan_with("http://127.0.0.1:18385", true).await;
+
+    let titles: Vec<&str> = report
+        .findings
+        .iter()
+        .map(|finding| finding.title.as_str())
+        .collect();
+
+    for expected in [
+        "Exposed file: /.env.local",
+        "Exposed file: /config.json",
+        "Exposed file: /backup.tar.gz",
+        "Exposed file: /actuator/env",
+        "Exposed file: /swagger.json",
+    ] {
+        assert!(
+            titles.contains(&expected),
+            "deep scan missed {expected}; got {titles:?}"
+        );
+    }
+
+    assert!(
+        titles.contains(&"AWS Access Key"),
+        "deep scan did not scan the JavaScript source map: {titles:?}"
+    );
+    assert!(
+        report.secrets_found >= 5,
+        "expected the source-map secret in addition to the 4 bundle secrets, got {}",
+        report.secrets_found
+    );
+    assert_eq!(
+        report.sensitive_found, 14,
+        "expected 9 normal + 5 deep exposed files, got {}",
+        report.sensitive_found
+    );
+    assert_eq!(report.score, 100, "deep scan must keep the score capped at 100");
+    assert!(
+        report.errors.is_empty(),
+        "deep scan returned errors: {:?}",
+        report.errors
     );
 }
 

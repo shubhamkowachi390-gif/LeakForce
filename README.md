@@ -1,4 +1,4 @@
-# 🕵️ LeakForce v1.0
+# 🕵️ LeakForce v1.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -20,9 +20,10 @@ Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
 | Module | What it does |
 |---|---|
 | **Sensitive Scan** | Checks 15 common exposed paths (`.env`, `.git/config`, `.git/HEAD`, `config.php`, `wp-config.php`, `backup.zip`, `backup.sql`, `db.sql`, `.bak`, `admin/`, `robots.txt`, `sitemap.xml`, `.DS_Store`, `package.json`, `docker-compose.yml`). It also reads `robots.txt` / `sitemap.xml` for hidden paths and checks those too. |
-| **JavaScript Secret Finder** | Downloads same-origin scripts and scans them with a Python regex engine for AWS keys, Google API keys, Slack tokens, JWT tokens, passwords, API keys, generic secrets, tokens, MongoDB/MySQL/PostgreSQL URIs and private keys. Secrets are **masked by default**; a **Reveal** button in the findings table shows the full value on screen only. Exports and history always stay masked. |
-| **Port Check** | Connect-only check for common database ports: MongoDB 27017, Redis 6379, Elasticsearch 9200, MySQL 3306, PostgreSQL 5432. It never tries to log in. |
-| **Login Test (lab only)** | Auto-detects a standard HTML login form, tries the built-in default credentials and the top-100 password list (or your own wordlist such as `rockyou.txt`), and stops immediately on success, lockout, HTTP 429, or CAPTCHA. |
+| **Deep Scan** | Optional toggle that adds 56 more high-signal paths (`.env.local`, `.git/`, `.svn/`, `config.json`, `appsettings.json`, `backup.tar.gz`, `database.sql`, `actuator/env`, `swagger.json`, `.htpasswd`, `id_rsa`, cloud credentials and more), 12 extra ports, and JavaScript source-map analysis. |
+| **JavaScript Secret Finder** | Downloads same-origin scripts and scans them with a Python regex engine for AWS keys, Google API keys, Slack tokens, JWT tokens, passwords, API keys, generic secrets, tokens, MongoDB/MySQL/PostgreSQL URIs and private keys. Deep Scan also scans `.map` source maps. Secrets are **masked by default**; a **Reveal** button in the findings table shows the full value on screen only. Exports and history always stay masked. |
+| **Port Check** | Connect-only check for common database ports: MongoDB 27017, Redis 6379, Elasticsearch 9200, MySQL 3306, PostgreSQL 5432. Deep Scan adds MSSQL, Oracle, RabbitMQ, CouchDB, Memcached, Consul, Docker API, Kafka and common dev ports. It never tries to log in. |
+| **Login Test (lab only)** | Auto-detects a standard HTML login form, tries the built-in default credentials and the top-1000 password list (or your own wordlist such as `rockyou.txt`), and stops immediately on success, lockout, HTTP 429, or CAPTCHA. |
 | **Dashboard & Reports** | Leak Score 0-100, severity filters, search, copy buttons, live log, history of the last 20 runs, and TXT / JSON / HTML exports. |
 
 ### 🧮 How the score works (exactly the same in UI, TXT, JSON and HTML)
@@ -46,7 +47,7 @@ all read that same value, so they can never disagree.
 ### 📦 Option A - Use the built app (recommended)
 
 1. Install the app with the installer:
-   `src-tauri\target\release\bundle\nsis\LeakForce_1.0.0_x64-setup.exe`
+   `src-tauri\target\release\bundle\nsis\LeakForce_1.1.0_x64-setup.exe`
 2. Install the two helpers LeakForce needs (one time):
    - **Python 3.9 or newer** - <https://www.python.org/downloads/windows/>
      During setup, tick **"Add python.exe to PATH"**.
@@ -78,7 +79,7 @@ builds the Java worker JAR, creates icons if missing, and runs `tauri build`.
 Expected outputs:
 
 - App: `src-tauri\target\release\leakforce.exe`
-- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.0.0_x64-setup.exe`
+- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.1.0_x64-setup.exe`
 
 For development with hot reload:
 
@@ -104,6 +105,9 @@ The project ships a local test lab. It creates fake vulnerable websites on your 
    - Expect exposed `.env`, `.git/config`, `.git/HEAD`, `backup.zip`, `backup.sql`, `.DS_Store`,
      `package.json`, `docker-compose.yml`, `admin/`.
    - Expect secrets in `app.js` (masked). The Leak Score should reach **100/100**.
+   - Tick **Deep Scan** and scan again to check the extra paths, 17 ports, and the
+     `app.js.map` source map. Expect `.env.local`, `config.json`, `backup.tar.gz`,
+     `actuator/env`, `swagger.json`, and an extra AWS key from the source map.
 3. Open **Brute Force**, tick the permission checkbox, enter `http://127.0.0.1:8381/`,
    choose the built-in wordlist, and click **Start Login Test**.
    - It should find **`Login Success: admin / password`** after 3 attempts and stop.
@@ -119,7 +123,7 @@ Press `Ctrl+C` in the lab window to stop the mock servers.
 
 - Default credential pairs (tried first):
   `admin/admin`, `admin/12345`, `admin/password`, `root/root`, `test/test`, `user/user`
-- Built-in password list: `wordlists\top100-passwords.txt` (exactly 100 entries)
+- Built-in password list: `wordlists\top1000-passwords.txt` (1000 entries)
 - Custom wordlist: choose any `.txt` file (for example `rockyou.txt`).
   Very large lists are capped at 200,000 entries for safety.
 - Default delay: **1000 ms** (1 request/second). Minimum: 250 ms. Maximum threads: **5**.
@@ -170,7 +174,7 @@ LeakForce/
   src/                  HTML + Tailwind CSS + JavaScript UI
   python-engine/        Python secret scanner + brute-force controller
   java-worker/          Java parallel login worker (zero external dependencies)
-  wordlists/            top100-passwords.txt
+  wordlists/            top1000-passwords.txt
   test-lab/             localhost mock servers + tests
   build.ps1             one-command build
   README.md             this file
@@ -232,7 +236,7 @@ LeakForce is released under the **MIT License**. You are free to use, modify, an
 
 ---
 
-**LeakForce v1.0** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
+**LeakForce v1.1** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
 
 **Developer:** ctf_shubh · **GitHub:** [shubhamkowachi390-gif](https://github.com/shubhamkowachi390-gif) · **License:** MIT 📄
 

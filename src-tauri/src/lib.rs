@@ -42,11 +42,12 @@ async fn run_sensitive_scan(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     target: String,
+    deep_scan: bool,
 ) -> Result<ScanReport, String> {
     if state.scan_running.swap(true, Ordering::SeqCst) {
         return Err("A scan is already running.".to_string());
     }
-    let result = scan_inner(app, &state, target).await;
+    let result = scan_inner(app, &state, target, deep_scan).await;
     state.scan_running.store(false, Ordering::SeqCst);
     result
 }
@@ -55,6 +56,7 @@ async fn scan_inner(
     app: tauri::AppHandle,
     state: &AppState,
     target: String,
+    deep_scan: bool,
 ) -> Result<ScanReport, String> {
     let settings = state
         .settings
@@ -65,6 +67,7 @@ async fn scan_inner(
     let options = scanner::ScanOptions {
         python: paths.python,
         engine_script: Some(paths.engine_script),
+        deep_scan,
     };
 
     let log_app = app.clone();

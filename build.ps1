@@ -1,4 +1,4 @@
-# LeakForce v1.0 - one-command Windows build
+# LeakForce v1.1 - one-command Windows build
 #
 # Usage (PowerShell, from this folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
@@ -28,7 +28,7 @@ function Require-Command($name, $hint) {
     }
 }
 
-Write-Host "LeakForce v1.0 build" -ForegroundColor Green
+Write-Host "LeakForce v1.1 build" -ForegroundColor Green
 Write-Host "Project: $root"
 
 Write-Step "Checking required tools"
@@ -84,8 +84,13 @@ if (Test-Path $exe) {
     Write-Host "Application EXE was not found at the expected path." -ForegroundColor Yellow
 }
 if (Test-Path $installerDir) {
-    Get-ChildItem $installerDir -Filter *.exe | ForEach-Object {
-        Write-Host "Installer       : $($_.FullName)" -ForegroundColor Green
+    $installer = Get-ChildItem $installerDir -Filter *.exe |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($installer) {
+        Write-Host "Installer       : $($installer.FullName)" -ForegroundColor Green
+    } else {
+        Write-Host "No installer EXE found in $installerDir" -ForegroundColor Yellow
     }
 } else {
     Write-Host "Installer folder not found: $installerDir" -ForegroundColor Yellow

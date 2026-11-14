@@ -247,13 +247,13 @@ pub fn resolve_paths(settings: &Settings, resource_dir: &Path, exe_dir: &Path) -
         first_existing(vec![
             resource_dir
                 .join("wordlists")
-                .join("top100-passwords.txt"),
+                .join("top1000-passwords.txt"),
             exe_dir
                 .join("wordlists")
-                .join("top100-passwords.txt"),
+                .join("top1000-passwords.txt"),
             project_dir
                 .join("wordlists")
-                .join("top100-passwords.txt"),
+                .join("top1000-passwords.txt"),
         ])
     } else {
         PathBuf::from(settings.wordlist_path.trim())

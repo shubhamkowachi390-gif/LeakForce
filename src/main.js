@@ -614,7 +614,10 @@
     $("#scan-button-text").textContent = busy ? "Scanning…" : "Start Scan";
     $("#scan-progress").classList.toggle("hidden", !busy);
     if (busy) {
-      $("#scan-status").textContent = "Scanning… this can take a few seconds";
+      const deep = $("#scan-deep")?.checked;
+      $("#scan-status").textContent = deep
+        ? "Deep scanning… extra paths, ports and source maps"
+        : "Scanning… this can take a few seconds";
       $("#scan-status").className = "text-xs text-emerald-300";
     }
   }
@@ -628,17 +631,19 @@
       return;
     }
     localStorage.setItem("leakforce.lastTarget", target);
+    const deep = $("#scan-deep").checked;
+    localStorage.setItem("leakforce.deepScan", deep ? "1" : "0");
     state.revealedSecrets.clear();
     setScanBusy(true);
-    addLog("info", `Starting sensitive scan: ${target}`);
+    addLog("info", `Starting ${deep ? "deep " : ""}sensitive scan: ${target}`);
     try {
-      const report = await invoke("run_sensitive_scan", { target });
+      const report = await invoke("run_sensitive_scan", { target, deepScan: deep });
       state.session = await invoke("get_session");
       renderSession();
-      $("#scan-status").textContent = `Complete — ${fmtDuration(report.durationMs)} · score ${report.score}/100`;
+      $("#scan-status").textContent = `${deep ? "Deep scan" : "Scan"} complete — ${fmtDuration(report.durationMs)} · score ${report.score}/100`;
       $("#scan-status").className = "text-xs text-emerald-300";
-      addLog("success", `Scan complete: ${report.score}/100 · ${report.findings.length} finding(s).`);
-      toast(`Scan complete — Leak Score ${report.score}/100`, "success");
+      addLog("success", `${deep ? "Deep scan" : "Scan"} complete: ${report.score}/100 · ${report.findings.length} finding(s).`);
+      toast(`${deep ? "Deep scan" : "Scan"} complete — Leak Score ${report.score}/100`, "success");
       refreshHistory();
     } catch (error) {
       const message = errMessage(error);
@@ -1191,10 +1196,11 @@
   async function init() {
     bindEvents();
     await bindBackendEvents();
-    addLog("info", "LeakForce v1.0 ready. Authorized lab use only.");
+    addLog("info", "LeakForce v1.1 ready. Authorized lab use only.");
 
     const savedTarget = localStorage.getItem("leakforce.lastTarget");
     if (savedTarget) $("#scan-target").value = savedTarget;
+    $("#scan-deep").checked = localStorage.getItem("leakforce.deepScan") === "1";
     $("#brute-target").placeholder = "http://localhost/dvwa/login.php";
 
     await Promise.allSettled([loadSettings(), refreshSession(), refreshHistory(), loadAppInfo()]);

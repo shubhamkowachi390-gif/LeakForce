@@ -46,6 +46,46 @@ const legacyConfig = {
 // Decoys that MUST be ignored:
 const placeholder = { api_key: "YOUR_API_KEY_HERE", password: "changeme" };
 const fromEnv = { password: "process.env.DB_PASSWORD" };
+//# sourceMappingURL=app.js.map
+"""
+
+FAKE_APP_MAP = json.dumps(
+    {
+        "version": 3,
+        "file": "app.js",
+        "sources": ["app.ts"],
+        "sourcesContent": [
+            "const awsAccessKey = 'AKIAIOSFODNN7EXAMPLE';\n"
+            "const awsSecretKey = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';\n"
+        ],
+    },
+    indent=2,
+)
+
+FAKE_CONFIG_JSON = json.dumps(
+    {
+        "app": "leakforce-demo",
+        "debug": True,
+        "database": {"host": "127.0.0.1", "user": "demo"},
+    },
+    indent=2,
+)
+
+FAKE_ACTUATOR_ENV = json.dumps(
+    {"activeProfiles": ["prod"], "propertySources": [{"name": "systemEnvironment"}]},
+    indent=2,
+)
+
+FAKE_SWAGGER = json.dumps(
+    {"swagger": "2.0", "info": {"title": "LeakForce Demo API", "version": "1.0"}},
+    indent=2,
+)
+
+FAKE_ENV_LOCAL = """APP_ENV=local
+APP_DEBUG=true
+DB_HOST=127.0.0.1
+DB_USER=localuser
+DB_PASSWORD=LocalOnlyPass123
 """
 
 FAKE_PACKAGE_JSON = json.dumps(
@@ -200,6 +240,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/docker-compose.yml":
             self._send(200, FAKE_DOCKER, "text/yaml")
+            return
+        if path == "/.env.local":
+            self._send(200, FAKE_ENV_LOCAL, "text/plain")
+            return
+        if path == "/config.json":
+            self._send(200, FAKE_CONFIG_JSON, "application/json")
+            return
+        if path == "/backup.tar.gz":
+            self._send(200, b"\x1f\x8b\x08\x00fake-tar-gz-content", "application/gzip")
+            return
+        if path == "/actuator/env":
+            self._send(200, FAKE_ACTUATOR_ENV, "application/json")
+            return
+        if path == "/swagger.json":
+            self._send(200, FAKE_SWAGGER, "application/json")
+            return
+        if path == "/app.js.map":
+            self._send(200, FAKE_APP_MAP, "application/json")
             return
         if path == "/dashboard":
             cookie = self.headers.get("Cookie", "")

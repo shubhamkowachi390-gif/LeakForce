@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LeakForce",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.leakforce.app",
   "build": {
     "frontendDist": "../src",
@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "LeakForce v1.0",
+        "title": "LeakForce v1.1",
         "width": 1366,
         "height": 768,
         "minWidth": 1100,
@@ -37,7 +37,7 @@
     "resources": {
       "../python-engine/leakforce_engine.py": "python-engine/leakforce_engine.py",
       "../java-worker/build/LeakForceWorker.jar": "java-worker/LeakForceWorker.jar",
-      "../wordlists/top100-passwords.txt": "wordlists/top100-passwords.txt"
+      "../wordlists/top1000-passwords.txt": "wordlists/top1000-passwords.txt"
     },
     "windows": {
       "nsis": {

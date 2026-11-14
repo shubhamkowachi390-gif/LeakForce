@@ -1,4 +1,4 @@
-# LeakForce v1.0 - Tested Checklist
+# LeakForce v1.1 - Tested Checklist
 
 This file records what was actually tested, how it was tested, and what still needs
 manual checking. Nothing here is aspirational: every "PASS" below was run on this
@@ -6,7 +6,7 @@ machine against localhost-only mock labs.
 
 - **Test date:** 2026-11-14
 - **OS:** Windows (x64), screen 1366x768
-- **App:** LeakForce v1.0 (release build)
+- **App:** LeakForce v1.1 (release build)
 - **Rust:** 1.100.0 (MSVC)
 - **Node.js:** v26.13.1
 - **Java:** Temurin JDK 17.0.21 (`C:\tools\jdk17`)
@@ -24,12 +24,12 @@ No third-party website was scanned or brute-forced.
 |---|---|---|---|
 | 1 | Python secret engine + brute controller (7 tests) | `python test-lab\test_engine.py` | **PASS 7/7** |
 | 2 | Rust scoring / report unit tests (4 tests) | `cd src-tauri; cargo test` | **PASS 4/4** |
-| 3 | Rust scanner end-to-end (3 tests) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 3/3** |
+| 3 | Rust scanner end-to-end (4 tests, including Deep Scan) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 4/4** |
 | 4 | Brute-force success / lockout / authorization (3 tests) | `powershell -NoProfile -ExecutionPolicy Bypass -File .\test-lab\run-brute-tests.ps1` | **PASS 3/3** |
 | 5 | Frontend JavaScript syntax | `node --check src\main.js` | **PASS** |
 | 6 | Python syntax | `python -m py_compile python-engine\leakforce_engine.py test-lab\mock_server.py` | **PASS** |
 | 7 | Java worker JAR exists | `java-worker\build\LeakForceWorker.jar` | **PASS** (7,733 bytes) |
-| 8 | Wordlist size | `wordlists\top100-passwords.txt` | **PASS** (exactly 100 entries) |
+| 8 | Wordlist size | `wordlists\top1000-passwords.txt` | **PASS** (1000 entries) |
 
 ### What the automated tests prove
 
@@ -48,13 +48,15 @@ No third-party website was scanned or brute-forced.
 - Login bonus is only awarded for the same host.
 - TXT/JSON/HTML reports read the same score as the `ScanReport` (85 in the fixture).
 
-**Scanner end-to-end (3/3, localhost)**
+**Scanner end-to-end (4/4, localhost)**
 - Vulnerable lab: 9 exposed files found, 4 secrets found and masked, Leak Score **100**.
 - `robots.txt` / `sitemap.xml` hidden paths discovered (`/hidden-admin-panel`).
 - No raw secret string appears anywhere in the serialized report (exports/history); the
   raw value is available only through the in-memory `reveal_secret` command.
 - Benign lab: score **0**, no file/secret findings.
 - Soft-404 SPA lab: score **0**, no false exposed-file findings.
+- **Deep Scan:** 14 exposed files (9 normal + 5 deep), 5 secrets including an AWS key
+  from `app.js.map`, 17 ports checked, score capped at **100**, no errors.
 
 **Brute controller (3/3, localhost)**
 - Success lab: detects `admin / password` on attempt 3, prints
@@ -68,7 +70,7 @@ No third-party website was scanned or brute-forced.
 
 | # | Check | How | Result |
 |---|---|---|---|
-| 1 | App launches from built EXE | `src-tauri\target\release\leakforce.exe` | **PASS** - window titled "LeakForce v1.0" |
+| 1 | App launches from built EXE | `src-tauri\target\release\leakforce.exe` | **PASS** - window titled "LeakForce v1.1" |
 | 2 | Default window size | Window rect on 1366x768 screen | **PASS** - 1366x768, centered |
 | 3 | Grey dark theme / green accents | Screenshot of Dashboard | **PASS** - `#101012` grey background, green/blue accents |
 | 4 | All five engines green | Settings -> Test Engines | **PASS** - Python, Java, Python engine, JAR, Wordlist |
@@ -87,16 +89,17 @@ No third-party website was scanned or brute-forced.
 | 17 | Brute Stop button | Click Stop during a run | **PASS** - run stops, no orphan Java process |
 | 18 | Benign lab score 0 | Scan `http://127.0.0.1:8383` | **PASS** |
 | 19 | Soft-404 lab no false files | Scan `http://127.0.0.1:8384` | **PASS** |
-| 20 | Installer | `LeakForce_1.0.0_x64-setup.exe` | **PASS** - NSIS installer produced (2.27 MiB) |
+| 20 | Installer | `LeakForce_1.1.0_x64-setup.exe` | **PASS** - NSIS installer produced |
 | 21 | Settings persist | Change delay/threads, restart app | **PASS** |
 | 22 | Secret Reveal / Hide | Click Reveal on a secret finding, then Hide | **PASS** - full value shown on screen only, masked again on Hide |
 | 23 | Exports stay masked after Reveal | Reveal a secret, then export TXT/JSON/HTML | **PASS** - exports contain masked values only |
 | 24 | Developer credit footer | Bottom of the app window | **PASS** - `Developer: ctf_shubh · GitHub: shubhamkowachi390-gif` |
+| 25 | Deep Scan toggle | Tick Deep Scan and scan `http://127.0.0.1:8381` | **PASS** - UI sends `deepScan`; backend e2e found 5 extra files + source-map AWS key |
 
 > The GUI checks above were performed on the release build against the local mock
 > lab. Checks 3, 5, 15, 22, 23 and 24 were re-run on the final rebuild (14 Nov 2026)
 > after the Reveal button and grey theme changes. The brute-force GUI runs use the
-> built-in top-100 wordlist at 250 ms delay and 1 thread so the automated lab
+> built-in top-1000 wordlist at 250 ms delay and 1 thread so the automated lab
 > finishes quickly.
 
 ---
