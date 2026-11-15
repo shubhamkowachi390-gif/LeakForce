@@ -258,7 +258,10 @@ async fn testphp_reports_clear_status() {
 async fn testfire_osint_with_harvester() {
     let report = leakforce_lib::osint::run_osint(
         "demo.testfire.net",
-        leakforce_lib::osint::OsintOptions { use_harvester: true },
+        leakforce_lib::osint::OsintOptions {
+            use_harvester: true,
+            ..Default::default()
+        },
         |level, message| println!("[{level}] {message}"),
     )
     .await
@@ -287,4 +290,71 @@ async fn testfire_osint_with_harvester() {
     println!("subdomains: {:?}", report.subdomains);
     println!("emails    : {:?}", report.emails);
     println!("ips       : {:?}", report.ip_addresses);
+}
+
+/// Reproduces the brute-force pre-check for an expired-certificate target:
+/// the strict client must fail on TLS, the tolerant fallback must fetch the
+/// login page successfully, and the body must contain a login form.
+#[tokio::test]
+#[ignore = "live network; run explicitly"]
+async fn testfire_brute_precheck_tls_fallback() {
+    let target = "https://demo.testfire.net/login.jsp";
+    let strict = leakforce_lib::scanner::build_shared_client().expect("strict client");
+    let relaxed = leakforce_lib::scanner::build_shared_client_tolerant().expect("relaxed client");
+
+    let strict_result = strict.get(target).send().await;
+    if let Ok(response) = &strict_result {
+        panic!("strict client unexpectedly succeeded with HTTP {}", response.status());
+    }
+    let strict_error = leakforce_lib::scanner::describe_request_error(
+        &strict_result.err().unwrap(),
+        target,
+    );
+    println!("strict error (expected): {strict_error}");
+    assert!(
+        strict_error.to_lowercase().contains("certificate")
+            || strict_error.to_lowercase().contains("tls handshake failed"),
+        "failure must be TLS/certificate related, got: {strict_error}"
+    );
+
+    let response = relaxed
+        .get(target)
+        .send()
+        .await
+        .expect("tolerant client must fetch the login page");
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    println!("tolerant fallback: HTTP {status}, {} chars", body.len());
+    assert_eq!(status, 200, "login page must be reachable via tolerant TLS");
+    assert!(
+        body.contains("<form") && body.to_lowercase().contains("password"),
+        "login page must contain a login form"
+    );
+}
+
+/// End-to-end check of the real brute-force pre-check function against the
+/// expired-certificate lab target: resolve_brute_target must succeed via the
+/// tolerant-TLS fallback (this exact case failed for users before the fix).
+#[tokio::test]
+#[ignore = "live network; run explicitly"]
+async fn testfire_brute_resolve_end_to_end() {
+    let resolved = leakforce_lib::brute::resolve_brute_target("https://demo.testfire.net/login.jsp")
+        .await
+        .expect("resolve_brute_target must reach the login page via tolerant TLS");
+    println!("resolved: {resolved}");
+    assert_eq!(resolved, "https://demo.testfire.net/login.jsp");
+
+    // Homepage-only input: reachable, but has no login form → clear error,
+    // not a network error.
+    let homepage = leakforce_lib::brute::resolve_brute_target("https://demo.testfire.net").await;
+    match homepage {
+        Ok(url) => println!("homepage has a login form: {url}"),
+        Err(message) => {
+            println!("homepage error (expected): {message}");
+            assert!(
+                message.contains("No login form found"),
+                "homepage failure must be the form check, not a network error, got: {message}"
+            );
+        }
+    }
 }

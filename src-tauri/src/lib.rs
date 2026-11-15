@@ -1,4 +1,4 @@
-mod brute;
+pub mod brute;
 mod engines;
 pub mod osint;
 pub mod models;

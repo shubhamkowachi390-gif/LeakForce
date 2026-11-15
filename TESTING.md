@@ -37,6 +37,8 @@ No third-party website was scanned or brute-forced.
 | 13 | Scanner end-to-end v1.2.0 (6 tests) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 6/6** |
 | 14 | Rust unit tests v1.2.1 (14 tests, incl. private-source engine list + brute TLS fallback) | `cd src-tauri; cargo test` | **PASS 14/14** |
 | 15 | Real-target OSINT + theHarvester e2e (`demo.testfire.net`, harvester_used=true) | `cargo test --test real_target_check testfire_osint_with_harvester -- --ignored --nocapture` | **PASS (51 s)** |
+| 16 | Brute pre-check TLS fallback (strict fails on expired cert, tolerant fetches login page) | `cargo test --test real_target_check testfire_brute_precheck_tls_fallback -- --ignored --nocapture` | **PASS** |
+| 17 | Brute pre-check end-to-end (`resolve_brute_target` on `/login.jsp` resolves; homepage gives form-check error) | `cargo test --test real_target_check testfire_brute_resolve_end_to_end -- --ignored --nocapture` | **PASS** |
 
 ### v1.2.1 additions
 

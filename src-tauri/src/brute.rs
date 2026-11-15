@@ -43,7 +43,7 @@ fn normalize_brute_target(input: &str) -> Result<String, String> {
 /// HTTPS first (then HTTP when no scheme was given), 15-second timeout through
 /// the shared client, and a real login-form check. Without a username/password
 /// form the run stops here with a clear error instead of a 0-attempt run.
-async fn resolve_brute_target(target: &str) -> Result<String, String> {
+pub async fn resolve_brute_target(target: &str) -> Result<String, String> {
     let client = crate::scanner::build_shared_client()?;
     let relaxed = crate::scanner::build_shared_client_tolerant()?;
     let candidates: Vec<String> =
@@ -65,7 +65,11 @@ async fn resolve_brute_target(target: &str) -> Result<String, String> {
         let response = match client.get(&candidate).send().await {
             Ok(response) => Some(response),
             Err(error) => {
-                if active_client(&error.to_string()) {
+                // reqwest's Display only shows "error sending request for url
+                // (...)" — the certificate/TLS detail lives in the source chain,
+                // so classify on the expanded error text.
+                let detailed = crate::scanner::describe_request_error(&error, &candidate);
+                if active_client(&detailed) {
                     match relaxed.get(&candidate).send().await {
                         Ok(response) => Some(response),
                         Err(retry_error) => {
@@ -77,10 +81,7 @@ async fn resolve_brute_target(target: &str) -> Result<String, String> {
                         }
                     }
                 } else {
-                    last_error = format!(
-                        "{candidate} — {}",
-                        crate::scanner::describe_request_error(&error, &candidate)
-                    );
+                    last_error = format!("{candidate} — {detailed}");
                     None
                 }
             }
