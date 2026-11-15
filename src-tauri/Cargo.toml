@@ -1,6 +1,6 @@
 [package]
 name = "leakforce"
-version = "1.1.1"
+version = "1.2.0"
 description = "LeakForce - authorized lab security scanner"
 license = "MIT"
 authors = ["LeakForce"]
@@ -19,7 +19,7 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "net", "time", "fs", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "stream", "charset", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "cookies", "gzip", "deflate", "brotli", "stream", "charset", "http2"] }
 futures = "0.3"
 regex = "1"
 url = "2"

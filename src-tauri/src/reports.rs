@@ -378,6 +378,8 @@ mod tests {
             errors: vec![],
             js_scan_status: "complete".into(),
             file_scan_status: "complete".into(),
+            homepage_ok: true,
+            homepage_error: None,
         };
         let (score, breakdown) = crate::models::compute_score(&report.findings, false);
         report.score = score;

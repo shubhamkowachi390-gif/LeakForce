@@ -31,6 +31,9 @@
     bruteTotal: 0,
     bruteAttempts: 0,
     checkingEngines: false,
+    osintRunning: false,
+    osintReport: null,
+    osintFindings: [],
   };
 
   const SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"];
@@ -46,6 +49,10 @@
     brute: {
       title: "Brute Force",
       sub: "Authorized lab-only login testing",
+    },
+    osint: {
+      title: "OSINT",
+      sub: "Passive public-data research (crt.sh, homepage, theHarvester)",
     },
     history: {
       title: "History",
@@ -208,6 +215,22 @@
       renderAppInfo();
     }
     if (name === "brute") prefillBruteTarget();
+    if (name === "osint") prefillOsintDomain();
+  }
+
+  function prefillOsintDomain() {
+    const input = $("#osint-domain");
+    if (!input || input.value.trim()) return;
+    const target = state.report?.target || "";
+    if (!target) return;
+    try {
+      const host = new URL(target).hostname.replace(/^www\./, "");
+      if (host && host.includes(".") && !/^localhost$|^127\./.test(host)) {
+        input.value = host;
+      }
+    } catch {
+      /* target is not a URL — leave the field empty */
+    }
   }
 
   function prefillBruteTarget() {
@@ -268,17 +291,32 @@
   function renderDashboard(score, breakdown, loginResult) {
     const arc = $("#score-arc");
     const circumference = 364.42;
+    const incomplete = state.report ? state.report.homepageOk === false : false;
     if (arc) {
       const clamped = Math.max(0, Math.min(100, Number(score) || 0));
       arc.style.strokeDashoffset = String(circumference * (1 - clamped / 100));
-      arc.style.stroke = scoreColor(clamped);
+      arc.style.stroke = incomplete ? "#f87171" : scoreColor(clamped);
     }
     const scoreValue = $("#score-value");
-    if (scoreValue) scoreValue.textContent = String(score ?? 0);
+    if (scoreValue) scoreValue.textContent = incomplete ? "—" : String(score ?? 0);
     const caption = $("#score-caption");
     if (caption) {
-      caption.textContent =
-        state.report || state.brute ? scoreCaption(Number(score) || 0) : "No scan yet";
+      caption.textContent = incomplete
+        ? "Incomplete — homepage fetch failed"
+        : state.report || state.brute
+        ? scoreCaption(Number(score) || 0)
+        : "No scan yet";
+    }
+
+    // Red banner: a failed homepage means the scan never actually ran.
+    const banner = $("#dash-incomplete-banner");
+    if (banner) {
+      banner.classList.toggle("hidden", !incomplete);
+      if (incomplete) {
+        const reason = state.report?.homepageError || "Could not fetch the target homepage.";
+        banner.textContent =
+          `Homepage fetch failed — scan incomplete. 0 files / 0 secrets does NOT mean clean. Reason: ${reason}`;
+      }
     }
 
     const report = state.report;
@@ -619,6 +657,43 @@
         ? "Deep scanning… extra paths, ports and source maps"
         : "Scanning… this can take a few seconds";
       $("#scan-status").className = "text-xs text-emerald-300";
+    }
+  }
+
+  async function testConnection() {
+    const button = $("#test-connection");
+    const panel = $("#conn-results");
+    if (button.disabled) return;
+    button.disabled = true;
+    panel.classList.remove("hidden");
+    panel.replaceChildren();
+    panel.appendChild(el("div", "text-slate-400", "Testing example.com, testphp.vulnweb.com and demo.testfire.net…"));
+    try {
+      const results = await invoke("test_connection");
+      panel.replaceChildren();
+      results.forEach((result) => {
+        const host = result.url.replace(/^https?:\/\//, "");
+        const stages = [
+          `DNS ${result.dnsOk ? "OK" : "FAIL"}${result.dnsIps?.length ? ` (${result.dnsIps[0]})` : ""}`,
+          `TCP ${result.tcpOk ? "OK" : "FAIL"}`,
+          `TLS ${result.tlsOk ? "OK" : "FAIL"}`,
+          result.httpStatus ? `HTTP ${result.httpStatus}` : "HTTP —",
+          `${result.ms}ms`,
+        ];
+        const failed = !result.dnsOk || !result.tcpOk || !result.tlsOk || !result.httpStatus;
+        const line = el("div", failed ? "text-amber-300" : "text-emerald-300", `${host} — ${stages.join(" · ")}`);
+        panel.appendChild(line);
+        if (result.error) {
+          panel.appendChild(el("div", "text-red-300 ml-4", result.error));
+        }
+        addLog(failed ? "warning" : "success", `Connection test ${host}: ${stages.join(" · ")}`);
+        if (result.error) addLog("warning", `Connection test detail: ${result.error}`);
+      });
+    } catch (error) {
+      panel.replaceChildren();
+      panel.appendChild(el("div", "text-red-300", errMessage(error)));
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -1124,6 +1199,148 @@
   }
 
   // ---------------------------------------------------------------------
+  // OSINT (passive public data)
+  // ---------------------------------------------------------------------
+
+  function osintResetUI() {
+    state.osintRunning = false;
+    ["osint-domain", "osint-harvester", "osint-authorize"].forEach((id) => {
+      const node = document.getElementById(id);
+      if (node) node.disabled = false;
+    });
+    $("#osint-start").disabled = false;
+    $("#osint-start").textContent = "Start OSINT";
+    $("#osint-copy").disabled = true;
+    $("#osint-export-txt").disabled = true;
+    $("#osint-export-json").disabled = true;
+    $("#osint-status").textContent = "Idle";
+    $("#osint-status").className = "text-slate-300";
+  }
+
+  function osintAddLog(level, message) {
+    const log = $("#osint-log");
+    if (!log) return;
+    const colors = { success: "text-emerald-300", warning: "text-amber-300", error: "text-red-300", info: "text-slate-400" };
+    const line = document.createElement("div");
+    line.className = colors[level] || colors.info;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function osintRenderFindings(report) {
+    const rows = [];
+    const push = (type, values, source) => {
+      values.forEach((value) => rows.push({ type, value, source }));
+    };
+    push("Subdomain", report.subdomains || [], "crt.sh / theHarvester");
+    push("E-mail", report.emails || [], "Homepage / theHarvester");
+    push("IP", report.ipAddresses || [], "theHarvester");
+    push("URL", report.urls || [], "theHarvester");
+
+    const body = $("#osint-findings");
+    body.replaceChildren();
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-900/60";
+      tr.innerHTML = `<td class="px-3 py-1.5 text-slate-400 font-sans">${row.type}</td>` +
+        `<td class="px-3 py-1.5 break-all">${escapeHtml(row.value)}</td>` +
+        `<td class="px-3 py-1.5 text-slate-500 font-sans">${escapeHtml(row.source)}</td>`;
+      body.appendChild(tr);
+    });
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="px-3 py-3 text-slate-500 font-sans" colspan="3">No public findings collected for this domain.</td>`;
+      body.appendChild(tr);
+    }
+
+    $("#osint-count-subdomains").textContent = (report.subdomains || []).length;
+    $("#osint-count-emails").textContent = (report.emails || []).length;
+    $("#osint-count-ips").textContent = (report.ipAddresses || []).length;
+    $("#osint-count-urls").textContent = (report.urls || []).length;
+
+    const meta = [];
+    if (report.pageTitle) meta.push(`Page title: "${report.pageTitle}"`);
+    if (report.sources?.length) meta.push(`Sources: ${report.sources.join(", ")}`);
+    if (report.harvesterAvailable) meta.push("theHarvester detected on PATH");
+    else meta.push("theHarvester not installed (optional) — built-in sources only");
+    $("#osint-meta").textContent = meta.join(" · ");
+
+    state.osintReport = report;
+    state.osintFindings = rows;
+    $("#osint-copy").disabled = rows.length === 0;
+    $("#osint-export-txt").disabled = false;
+    $("#osint-export-json").disabled = false;
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])
+    );
+  }
+
+  async function startOsint() {
+    if (state.osintRunning) return;
+    if (!$("#osint-authorize").checked) {
+      toast("Confirm the authorization checkbox first.", "error");
+      return;
+    }
+    const domain = $("#osint-domain").value.trim();
+    if (!domain) {
+      toast("Enter a target domain first.", "error");
+      return;
+    }
+    state.osintRunning = true;
+    ["osint-domain", "osint-harvester", "osint-authorize"].forEach((id) => {
+      document.getElementById(id).disabled = true;
+    });
+    $("#osint-start").disabled = true;
+    $("#osint-start").textContent = "Running…";
+    $("#osint-copy").disabled = true;
+    $("#osint-export-txt").disabled = true;
+    $("#osint-export-json").disabled = true;
+    $("#osint-findings").replaceChildren();
+    $("#osint-log").replaceChildren();
+    ["osint-count-subdomains", "osint-count-emails", "osint-count-ips", "osint-count-urls"].forEach((id) => {
+      document.getElementById(id).textContent = "0";
+    });
+    $("#osint-meta").textContent = "";
+    $("#osint-duration").textContent = "";
+    $("#osint-status").textContent = "Running…";
+
+    const started = Date.now();
+    try {
+      const report = await invoke("run_osint_scan", {
+        domain,
+        authorized: true,
+        useHarvester: $("#osint-harvester").checked,
+      });
+      osintRenderFindings(report);
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      $("#osint-duration").textContent = `${seconds}s`;
+      $("#osint-status").textContent = "Done";
+      $("#osint-status").className = "text-emerald-300";
+      toast(`OSINT complete in ${seconds}s.`, "success");
+    } catch (error) {
+      $("#osint-status").textContent = "Failed";
+      $("#osint-status").className = "text-red-300";
+      toast(errMessage(error), "error");
+    } finally {
+      osintResetUI();
+      refreshHistory();
+    }
+  }
+
+  async function exportOsint(kind) {
+    try {
+      const path = await invoke("export_osint_report", { kind });
+      toast(`Exported: ${path}`, "success");
+    } catch (error) {
+      toast(errMessage(error), "error");
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Event bindings
   // ---------------------------------------------------------------------
 
@@ -1140,6 +1357,7 @@
     $("#dash-view-findings").addEventListener("click", () => switchView("sensitive"));
 
     $("#start-scan").addEventListener("click", startScan);
+    $("#test-connection").addEventListener("click", testConnection);
     $("#scan-target").addEventListener("keydown", (event) => {
       if (event.key === "Enter") startScan();
     });
@@ -1177,6 +1395,17 @@
       );
     });
     $("#brute-browse").addEventListener("click", () => browseWordlist("brute-wordlist-path"));
+
+    $("#osint-start").addEventListener("click", startOsint);
+    $("#osint-copy").addEventListener("click", async () => {
+      const rows = state.osintFindings || [];
+      if (!rows.length) return;
+      const text = rows.map((row) => `${row.type}\t${row.value}\t${row.source}`).join("\n");
+      await copyText(text);
+      toast("Findings copied to clipboard.", "success");
+    });
+    $("#osint-export-txt").addEventListener("click", () => exportOsint("txt"));
+    $("#osint-export-json").addEventListener("click", () => exportOsint("json"));
     $("#browse-settings-wordlist").addEventListener("click", () => browseWordlist("wordlist-path"));
 
     $("#refresh-history").addEventListener("click", refreshHistory);
@@ -1200,6 +1429,10 @@
         addLog(payload.level || "info", payload.message || "");
       });
       await listen("brute-event", (event) => handleBruteEvent(event.payload));
+      await listen("osint-log", (event) => {
+        const payload = event.payload || {};
+        osintAddLog(payload.level || "info", payload.message || "");
+      });
     } catch (error) {
       addLog("warning", `Could not subscribe to backend events: ${errMessage(error)}`);
     }
@@ -1208,7 +1441,7 @@
   async function init() {
     bindEvents();
     await bindBackendEvents();
-    addLog("info", "LeakForce v1.1.1 ready. Authorized lab use only.");
+    addLog("info", "LeakForce v1.2.0 ready. Authorized lab use only.");
 
     const savedTarget = localStorage.getItem("leakforce.lastTarget");
     if (savedTarget) $("#scan-target").value = savedTarget;

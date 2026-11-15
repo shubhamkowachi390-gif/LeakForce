@@ -80,6 +80,17 @@ pub struct ScanReport {
     /// reachable target.
     #[serde(default)]
     pub file_scan_status: String,
+    /// False when the homepage itself could not be fetched: the scan never
+    /// ran, so a 0/100 score must be displayed as "Incomplete", not clean.
+    #[serde(default = "default_true")]
+    pub homepage_ok: bool,
+    /// Detailed reason the homepage fetch failed (DNS / TCP / TLS / status).
+    #[serde(default)]
+    pub homepage_error: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +123,23 @@ pub struct BruteConfig {
     pub authorized: bool,
 }
 
+/// Result of one target in the "Test Connection" diagnostic. Every stage
+/// (DNS / TCP / TLS / HTTP) is reported separately so a user can see exactly
+/// where a request stops.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionDiag {
+    pub url: String,
+    pub dns_ips: Vec<String>,
+    pub dns_ok: bool,
+    pub tcp_ok: bool,
+    pub tls_ok: bool,
+    pub http_status: Option<u16>,
+    pub ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -121,6 +149,28 @@ pub struct HistoryEntry {
     pub kind: String,
     pub score: u32,
     pub summary: String,
+}
+
+/// Result of a passive OSINT run. Every value comes from public sources
+/// (crt.sh, the site's own homepage, and optionally a local theHarvester
+/// install). Nothing here is a probe against the target itself.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsintReport {
+    pub id: String,
+    pub domain: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration_ms: u64,
+    pub subdomains: Vec<String>,
+    pub emails: Vec<String>,
+    pub ip_addresses: Vec<String>,
+    pub urls: Vec<String>,
+    pub page_title: String,
+    pub sources: Vec<String>,
+    pub harvester_available: bool,
+    pub harvester_used: bool,
+    pub errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -320,6 +370,8 @@ mod tests {
             errors: vec![],
             js_scan_status: "complete".into(),
             file_scan_status: "complete".into(),
+            homepage_ok: true,
+            homepage_error: None,
         };
         let matching = BruteSummary {
             id: "b".into(),

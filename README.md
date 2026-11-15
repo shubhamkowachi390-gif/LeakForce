@@ -1,4 +1,4 @@
-# 🕵️ LeakForce v1.1.1
+# 🕵️ LeakForce v1.2.0
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -6,9 +6,38 @@
 
 LeakForce checks a website for common exposed files, hard-coded secrets in JavaScript,
 open database ports, and (only with your confirmation) weak login passwords on lab sites.
-Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
+It can also run passive OSINT research (public data only). Everything runs locally on
+your PC. Nothing is uploaded anywhere. 🔒
 
-### 🆕 v1.1.1 bug-fixes (based on real testing feedback)
+### 🆕 v1.2.0 — OSINT module + rebuilt HTTP engine
+
+1. 🔍 **OSINT section (new sidebar page)** — passive public-data research for one domain:
+   **crt.sh** certificate-transparency subdomains, the site's own homepage (e-mail
+   addresses, page title), and optionally a locally installed **theHarvester**
+   (`pip install theHarvester`, detected automatically). Findings are shown in a
+   Type / Value / Source table with Copy-all and TXT/JSON export. Findings are
+   informational (severity Info, 0 score impact). Authorization checkbox is mandatory.
+2. 🌐 **HTTP engine rebuilt** — the single shared client now uses the **OS certificate
+   store** (native TLS / schannel), the real Chrome/120 browser headers
+   (Accept, Accept-Language, gzip/deflate/brotli), a **cookie jar**, **10 redirects**,
+   15 s connect/total timeouts and 1 automatic retry after 2 s. It supports `http://`
+   and `https://`, tries **https first, then http**, and prefers **IPv4** addresses so
+   broken IPv6 networks no longer look like "the site is down".
+3. 🧾 **Detailed error logging** — failures now name the exact stage:
+   `DNS failed for host`, `TCP connect timed out after 15s`, `TLS handshake failed
+   (certificate expired?)`, `HTTP request timed out after 15s`. The live log shows
+   DNS IP, HTTP status, bytes and elapsed ms. If the homepage cannot be fetched the
+   scan stops and the Leak Score is shown as **Incomplete** with a red banner —
+   never as a clean 0/100.
+4. 🩺 **Test Connection button** — next to Start Scan. Tests `example.com`,
+   `testphp.vulnweb.com` and `demo.testfire.net` and reports DNS IP, TCP, TLS,
+   HTTP status and timing for each, so you can prove the HTTP client works before
+   a full scan.
+5. 🔐 If a site's own certificate is invalid or expired (e.g. `demo.testfire.net`),
+   the scan retries **without** certificate validation in lab mode and logs a
+   prominent warning — the same behaviour as clicking through a browser warning.
+
+### 🆙 v1.1.1 bug-fixes (kept, still active)
 
 1. 🛰️ **Port false positives fixed** — a port is called **open** only when the service
    answers with a banner or a protocol-specific probe (Redis PING, Memcached version,
@@ -18,8 +47,8 @@ Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
 2. 🧮 **One scoring function** — UI, live log and exports all share the same score:
    Critical ×25, High ×15, Medium ×5, Low ×2, Info ×0, login success +30, cap 100.
    The log prints the full breakdown, and the **All** filter count now displays correctly.
-3. 🌐 **One shared HTTP client** — real browser User-Agent, 5 redirects, 15 s timeout,
-   1 automatic retry, real HTTP status codes. If the homepage cannot be fetched, the
+3. 🌐 **One shared HTTP client** — real browser User-Agent, redirects, 15 s timeout,
+    1 automatic retry, real HTTP status codes. If the homepage cannot be fetched, the
    JavaScript and sensitive-file modules are marked **Failed - Incomplete** in red
    instead of silently reporting "0 secrets / 0 files".
 4. 🔐 **Login test pre-check** — HTTPS first, then HTTP; the tool fetches the URL and
@@ -45,18 +74,23 @@ Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
 | **JavaScript Secret Finder** | Downloads same-origin scripts and scans them with a Python regex engine for AWS keys, Google API keys, Slack tokens, JWT tokens, passwords, API keys, generic secrets, tokens, MongoDB/MySQL/PostgreSQL URIs and private keys. Deep Scan also scans `.map` source maps. Secrets are **masked by default**; a **Reveal** button in the findings table shows the full value on screen only. Exports and history always stay masked. |
 | **Port Check** | Connect-only check for common database ports: MongoDB 27017, Redis 6379, Elasticsearch 9200, MySQL 3306, PostgreSQL 5432. Deep Scan adds MSSQL, Oracle, RabbitMQ, CouchDB, Memcached, Consul, Docker API, Kafka and common dev ports. It never tries to log in. |
 | **Login Test (lab only)** | Auto-detects a standard HTML login form, tries the built-in default credentials and the top-1000 password list (or your own wordlist such as `rockyou.txt`), and stops immediately on success, lockout, HTTP 429, or CAPTCHA. |
+| **OSINT (passive)** | Own sidebar section. Public-data research for one domain: crt.sh subdomains, homepage e-mails/title, optional local theHarvester. No probing, no logins — Info/Low findings only. |
 | **Dashboard & Reports** | Leak Score 0-100, severity filters, search, copy buttons, live log, history of the last 20 runs, and TXT / JSON / HTML exports. |
 
 ### 🧮 How the score works (exactly the same in UI, TXT, JSON and HTML)
 
-| Finding | Points |
+| Finding severity | Points |
 |---|---|
-| Critical secret | +40 |
-| High secret | +25 |
-| `.env` or `.git` exposed | +20 |
-| Backup or SQL file exposed | +15 |
+| Critical | +25 |
+| High | +15 |
+| Medium | +5 |
+| Low | +2 |
+| Info | +0 |
 | Successful login test | +30 |
 | **Maximum** | **100** |
+
+Severity points are the sum over all findings ("All" = Critical + High + Medium + Low + Info),
+capped at 100. If the homepage fetch fails, the score is shown as **Incomplete**, not 0.
 
 The Rust backend calculates the score once. The dashboard, TXT report, JSON report and HTML report
 all read that same value, so they can never disagree.
@@ -68,7 +102,7 @@ all read that same value, so they can never disagree.
 ### 📦 Option A - Use the built app (recommended)
 
 1. Install the app with the installer:
-   `src-tauri\target\release\bundle\nsis\LeakForce_1.1.1_x64-setup.exe`
+   `src-tauri\target\release\bundle\nsis\LeakForce_1.2.0_x64-setup.exe`
 2. Install the two helpers LeakForce needs (one time):
    - **Python 3.9 or newer** - <https://www.python.org/downloads/windows/>
      During setup, tick **"Add python.exe to PATH"**.
@@ -100,7 +134,7 @@ builds the Java worker JAR, creates icons if missing, and runs `tauri build`.
 Expected outputs:
 
 - App: `src-tauri\target\release\leakforce.exe`
-- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.1.1_x64-setup.exe`
+- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.2.0_x64-setup.exe`
 
 For development with hot reload:
 

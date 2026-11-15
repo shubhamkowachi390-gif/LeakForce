@@ -13,14 +13,23 @@ use tokio::net::TcpStream;
 use url::Url;
 use uuid::Uuid;
 
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-    (KHTML, like Gecko) Chrome/124.0 Safari/537.36 LeakForce/1.1.1 (authorized lab testing)";
+/// Real browser User-Agent (required: must match Chrome exactly so sites that
+/// block unknown clients still respond).
+const USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /// Per-request timeout for the sensitive-path probes (speed fix: many paths in
 /// parallel, each with a short timeout).
 const PATH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Parallel sensitive-path requests at a time.
 const PATH_CONCURRENCY: usize = 5;
+/// Shared-client timeouts: 15 s connect, 15 s per request.
+const CLIENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const CLIENT_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// How many redirects the shared client may follow (http<->https included).
+const CLIENT_MAX_REDIRECTS: usize = 10;
+/// Pause before the single automatic retry.
+const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 const SENSITIVE_PATHS: &[&str] = &[
     "/.env",
@@ -134,12 +143,12 @@ pub struct ScanOptions {
 }
 
 #[derive(Clone)]
-struct Fetched {
-    status: u16,
-    final_url: String,
-    content_type: String,
-    body: Vec<u8>,
-    len: usize,
+pub struct Fetched {
+    pub status: u16,
+    pub final_url: String,
+    pub content_type: String,
+    pub body: Vec<u8>,
+    pub len: usize,
 }
 
 #[derive(Deserialize)]
@@ -200,17 +209,209 @@ fn normalize_target(input: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// Single shared HTTP client used by every module (sensitive files, scripts,
-/// source maps and the brute-force pre-check): real browser User-Agent,
-/// up to 5 redirects and a 15-second total timeout.
-pub fn build_shared_client() -> Result<Client, String> {
-    Client::builder()
+/// DNS resolver that prefers IPv4 (A records) and only falls back to IPv6.
+/// Some Windows networks have broken IPv6 routing: the system resolves the
+/// AAAA record first and the TCP connect then hangs forever, which looked
+/// like "the site is down" while every browser still worked (browsers use
+/// Happy Eyeballs and race IPv4 against IPv6). Sorting A records first
+/// reproduces that behaviour for a plain HTTP client.
+struct PreferIpv4Resolver;
+
+impl reqwest::dns::Resolve for PreferIpv4Resolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let addresses = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            let mut sorted: Vec<std::net::SocketAddr> = addresses.collect();
+            sorted.sort_by_key(|address| !address.is_ipv4());
+            if sorted.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("no addresses resolved for {host}"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(sorted.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+fn default_headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::{ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, HeaderMap, HeaderValue};
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+    );
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+    headers
+}
+
+fn shared_client_builder(tolerant_tls: bool) -> reqwest::ClientBuilder {
+    let mut builder = Client::builder()
         .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .default_headers(default_headers())
+        .timeout(CLIENT_TOTAL_TIMEOUT)
+        .connect_timeout(CLIENT_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(CLIENT_MAX_REDIRECTS))
+        .cookie_store(true)
+        .dns_resolver(std::sync::Arc::new(PreferIpv4Resolver));
+    if tolerant_tls {
+        // Lab-mode fallback only: used when the site's own certificate is
+        // invalid/expired (e.g. demo.testfire.net) and the browser would show
+        // a warning the user clicks through. The scan logs a prominent
+        // warning whenever this is active.
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    builder
+}
+
+/// Single shared HTTP client used by every module (homepage, sensitive files,
+/// JavaScript secrets, source maps, OSINT and the brute-force pre-check):
+/// OS certificate store (native-tls/schannel on Windows), real browser
+/// headers, cookies kept between requests, up to 10 redirects and 15-second
+/// connect/total timeouts. IPv4 is preferred to survive broken IPv6 networks.
+pub fn build_shared_client() -> Result<Client, String> {
+    shared_client_builder(false)
         .build()
         .map_err(|error| format!("Could not create HTTP client: {error}"))
+}
+
+/// Same client with certificate validation relaxed — only used as an
+/// automatic fallback when TLS fails with a certificate problem.
+pub fn build_shared_client_tolerant() -> Result<Client, String> {
+    shared_client_builder(true)
+        .build()
+        .map_err(|error| format!("Could not create HTTP client: {error}"))
+}
+
+/// Classify a request failure into the stage that actually failed (DNS, TCP,
+/// TLS, timeout, decode, HTTP status) and produce a message a user can act
+/// on — never the bare "error sending request".
+pub fn describe_request_error(error: &reqwest::Error, url: &str) -> String {
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| url.to_string());
+
+    if error.is_timeout() {
+        return format!("HTTP request timed out after {}s ({host}) — the site or network is too slow.", CLIENT_TOTAL_TIMEOUT.as_secs());
+    }
+    if error.is_connect() {
+        let mut chain = Vec::new();
+        let mut source: Option<&dyn std::error::Error> = Some(error);
+        while let Some(current) = source {
+            chain.push(current.to_string());
+            source = current.source();
+        }
+        let joined = chain.join(" | ").to_lowercase();
+        if joined.contains("dns") || joined.contains("resolve") || joined.contains("temporary failure in name resolution") {
+            return format!("DNS failed for {host}: no address could be resolved ({joined}).");
+        }
+        if joined.contains("certificate") || joined.contains("tls") || joined.contains("ssl") || joined.contains("handshake") {
+            return format!("TLS handshake failed for {host}: {joined}. The site's HTTPS certificate may be expired or invalid.");
+        }
+        if joined.contains("refused") {
+            return format!("Connection refused by {host} — nothing is listening on that port.");
+        }
+        if joined.contains("timed out") || joined.contains("timeout") {
+            return format!("TCP connect timed out after {}s to {host}.", CLIENT_CONNECT_TIMEOUT.as_secs());
+        }
+        if joined.contains("unreachable") || joined.contains("unreachable network") {
+            return format!("Network unreachable for {host} — no route to the host ({joined}).");
+        }
+        return format!("Could not connect to {host}: {joined}.");
+    }
+    if error.is_decode() {
+        return format!("Could not decode the response from {host}: {error}");
+    }
+    if error.is_body() || error.is_request() {
+        return format!("Request to {host} failed: {error}");
+    }
+    error.to_string()
+}
+
+/// True when the failure text points at a TLS certificate problem, so the
+/// scan may fall back to the tolerant client (with a loud warning).
+fn is_certificate_error_text(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    lowered.contains("certificate") || lowered.contains("tls handshake failed")
+}
+
+/// Fetch a URL, streaming at most `max_bytes`. Network errors are retried once
+/// after 2 s. An optional per-request timeout overrides the client default.
+/// The caller always receives the real HTTP status code inside `Fetched`.
+pub async fn fetch_limited_with_timeout(
+    client: &Client,
+    url: &str,
+    max_bytes: usize,
+    per_request_timeout: Option<Duration>,
+) -> Result<Fetched, String> {
+    async fn send_once(
+        client: &Client,
+        url: &str,
+        per_request_timeout: Option<Duration>,
+    ) -> reqwest::Result<reqwest::Response> {
+        let mut request = client.get(url);
+        if let Some(timeout) = per_request_timeout {
+            request = request.timeout(timeout);
+        }
+        request.send().await
+    }
+
+    let response = match send_once(client, url, per_request_timeout).await {
+        Ok(response) => response,
+        Err(error) => {
+            // One automatic retry for transient network failures.
+            let first_attempt = describe_request_error(&error, url);
+            tokio::time::sleep(RETRY_DELAY).await;
+            match send_once(client, url, per_request_timeout).await {
+                Ok(response) => response,
+                Err(retry_error) => {
+                    let stage = describe_request_error(&retry_error, url);
+                    return Err(format!(
+                        "{stage} (first attempt: {first_attempt}; retried once and failed again)"
+                    ));
+                }
+            }
+        }
+    };
+    let status = response.status().as_u16();
+    let final_url = response.url().to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let declared = response.content_length().unwrap_or(0) as usize;
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        let remaining = max_bytes.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(chunk.len());
+        body.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            break;
+        }
+    }
+
+    let len = if declared > 0 { declared } else { body.len() };
+    Ok(Fetched {
+        status,
+        final_url,
+        content_type,
+        body,
+        len,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,70 +510,6 @@ async fn verify_port(host: &str, port: u16) -> (PortState, String) {
 
 async fn fetch_limited(client: &Client, url: &str, max_bytes: usize) -> Result<Fetched, String> {
     fetch_limited_with_timeout(client, url, max_bytes, None).await
-}
-
-/// Fetch a URL, streaming at most `max_bytes`. Network errors are retried once.
-/// An optional per-request timeout overrides the client default. The caller
-/// always receives the real HTTP status code inside `Fetched`.
-async fn fetch_limited_with_timeout(
-    client: &Client,
-    url: &str,
-    max_bytes: usize,
-    per_request_timeout: Option<Duration>,
-) -> Result<Fetched, String> {
-    let mut request = client.get(url);
-    if let Some(timeout) = per_request_timeout {
-        request = request.timeout(timeout);
-    }
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(error) => {
-            // One automatic retry for transient network failures.
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            let mut retry = client.get(url);
-            if let Some(timeout) = per_request_timeout {
-                retry = retry.timeout(timeout);
-            }
-            let retry = retry
-                .send()
-                .await
-                .map_err(|retry_error| format!("{error} (retried once: {retry_error})"))?;
-            retry
-        }
-    };
-    let status = response.status().as_u16();
-    let final_url = response.url().to_string();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let declared = response.content_length().unwrap_or(0) as usize;
-
-    let mut body = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
-        let remaining = max_bytes.saturating_sub(body.len());
-        if remaining == 0 {
-            break;
-        }
-        let take = remaining.min(chunk.len());
-        body.extend_from_slice(&chunk[..take]);
-        if take < chunk.len() {
-            break;
-        }
-    }
-
-    let len = if declared > 0 { declared } else { body.len() };
-    Ok(Fetched {
-        status,
-        final_url,
-        content_type,
-        body,
-        len,
-    })
 }
 
 fn short_content_type(content_type: &str) -> &str {
@@ -502,7 +639,9 @@ fn file_detail(status: u16, content_type: &str, len: usize, soft_404: bool) -> S
         },
         len
     );
-    if soft_404 {
+    if status == 403 {
+        detail.push_str(" · Forbidden (exists but blocked)");
+    } else if soft_404 {
         detail.push_str(" · ignored as a soft-404 response");
     }
     detail
@@ -974,6 +1113,8 @@ where
     }
 
     let client = build_shared_client()?;
+    let relaxed_client = build_shared_client_tolerant()?;
+    let mut client = client;
 
     let mut errors: Vec<String> = Vec::new();
     let mut findings: Vec<Finding> = Vec::new();
@@ -987,21 +1128,56 @@ where
     let mut homepage_reachable = false;
     let mut file_scan_failed = false;
     let mut js_scan_failed = false;
+    let mut homepage_error: Option<String> = None;
 
-    match fetch_limited(&client, url.as_str(), 2_097_152).await {
+    // DNS step is logged explicitly so the LIVE LOG shows exactly how far a
+    // request gets: DNS -> TCP -> TLS -> HTTP status.
+    let host_for_log = url.host_str().unwrap_or("target").to_string();
+    log("info", &format!("Resolving DNS for {host_for_log}..."));
+    match tokio::net::lookup_host((host_for_log.as_str(), 80u16)).await {
+        Ok(addresses) => {
+            let mut sorted: Vec<std::net::IpAddr> = addresses.map(|a| a.ip()).collect();
+            sorted.sort_by_key(|ip| !ip.is_ipv4());
+            let shown: Vec<String> = sorted.iter().take(3).map(ToString::to_string).collect();
+            log("success", &format!("DNS resolved to {}.", shown.join(", ")));
+        }
+        Err(error) => log(
+            "warning",
+            &format!("DNS lookup warning for {host_for_log}: {error}"),
+        ),
+    }
+
+    let homepage_started = Instant::now();
+    let mut homepage_result = fetch_limited(&client, url.as_str(), 2_097_152).await;
+    if let Err(error) = &homepage_result {
+        if is_certificate_error_text(error) {
+            log(
+                "warning",
+                "TLS certificate problem on this site — retrying WITHOUT certificate validation (lab mode). All other TLS sites keep full validation.",
+            );
+            homepage_result = fetch_limited(&relaxed_client, url.as_str(), 2_097_152).await;
+            if homepage_result.is_ok() {
+                client = relaxed_client;
+                log("warning", "Continuing the whole scan with certificate validation relaxed for this target.");
+            }
+        }
+    }
+
+    match homepage_result {
         Ok(fetched) => {
             homepage_reachable = true;
             log(
-                "info",
+                "success",
                 &format!(
-                    "Homepage: HTTP {} ({}, {} bytes).",
+                    "TCP connected, TLS OK, HTTP status {} ({}, {} bytes, {} ms).",
                     fetched.status,
                     if fetched.content_type.is_empty() {
                         "unknown type"
                     } else {
                         short_content_type(&fetched.content_type)
                     },
-                    fetched.len
+                    fetched.len,
+                    homepage_started.elapsed().as_millis()
                 ),
             );
             if fetched.status != 200 {
@@ -1018,9 +1194,11 @@ where
         Err(error) => {
             file_scan_failed = true;
             js_scan_failed = true;
+            homepage_error = Some(error.clone());
             let message = format!("Could not fetch the target homepage: {error}");
             errors.push(message.clone());
             log("error", &message);
+            log("error", "HOMEPAGE FETCH FAILED — scan incomplete. 0 files / 0 secrets does NOT mean clean; the Leak Score is shown as Incomplete.");
             log(
                 "error",
                 "JavaScript scan: Failed - Incomplete, secrets not checked.",
@@ -1123,7 +1301,11 @@ where
         match result {
             Ok(fetched) => {
                 let soft_404 = looks_like_soft_404(&fetched, &baseline);
-                let found = (fetched.status == 200 || fetched.status == 206) && !soft_404;
+                // Only 200/206 (real content) and 403 (exists but blocked)
+                // count as findings; 404 and soft-404 are not findings.
+                let found =
+                    (fetched.status == 200 || fetched.status == 206 || fetched.status == 403)
+                        && !soft_404;
                 let detail =
                     file_detail(fetched.status, &fetched.content_type, fetched.len, soft_404);
                 checks.push(FileCheck {
@@ -1137,7 +1319,7 @@ where
                 if found {
                     log(
                         "success",
-                        &format!("FOUND: {path} (HTTP {})", fetched.status),
+                        &format!("FOUND: {} (HTTP {}) — {}", path, fetched.status, target_url),
                     );
                     if path == "/robots.txt" {
                         robots_body = Some(String::from_utf8_lossy(&fetched.body).to_string());
@@ -1228,7 +1410,9 @@ where
             match result {
                 Ok(fetched) => {
                     let soft_404 = looks_like_soft_404(&fetched, &baseline);
-                    let found = (fetched.status == 200 || fetched.status == 206) && !soft_404;
+                    let found =
+                        (fetched.status == 200 || fetched.status == 206 || fetched.status == 403)
+                            && !soft_404;
                     checks.push(FileCheck {
                         path: path.clone(),
                         url: target_url.clone(),
@@ -1418,17 +1602,20 @@ where
         let (secret_findings, ok) =
             run_python_secret_scan(options, &js_files, &mut errors, &log).await;
         engine_ok = ok;
+        let secret_count = secret_findings.len();
         findings.extend(secret_findings);
         log(
             "info",
             &format!(
-                "JavaScript scan checked {} file(s){}.",
+                "Found {} JavaScript files, checked {}, found {} secret(s){}.",
                 js_files.len(),
+                js_files.len(),
+                secret_count,
                 if deep { ", including source maps" } else { "" }
             ),
         );
     } else if page_status == Some(200) && !js_scan_failed {
-        log("info", "No JavaScript files found to scan for secrets.");
+        log("info", "Found 0 JavaScript files — the homepage had no <script src> tags to check.");
     }
     if !engine_ok {
         js_scan_failed = true;
@@ -1565,12 +1752,19 @@ where
     for item in &score_breakdown {
         log("info", &format!("Score: {} = {} points.", item.label, item.points));
     }
-    log(
-        "info",
-        &format!(
-            "Leak Score: {score}/100 (Critical ×25, High ×15, Medium ×5, Low ×2, Info ×0)."
-        ),
-    );
+    if homepage_reachable {
+        log(
+            "info",
+            &format!(
+                "Leak Score: {score}/100 (Critical ×25, High ×15, Medium ×5, Low ×2, Info ×0)."
+            ),
+        );
+    } else {
+        log(
+            "warning",
+            "Leak Score: Incomplete — the homepage could not be fetched, so nothing was checked.",
+        );
+    }
 
     let report = ScanReport {
         id: Uuid::new_v4().to_string(),
@@ -1596,18 +1790,30 @@ where
         } else {
             "complete".to_string()
         },
+        homepage_ok: homepage_reachable,
+        homepage_error,
     };
 
-    log(
-        "success",
-        &format!(
-            "Scan complete in {:.1}s — Leak Score {}/100 · {} sensitive file(s) · {} secret(s).",
-            duration_ms as f64 / 1000.0,
-            score,
-            sensitive_found,
-            secrets_found
-        ),
-    );
+    if homepage_reachable {
+        log(
+            "success",
+            &format!(
+                "Scan complete in {:.1}s — Leak Score {}/100 · {} sensitive file(s) · {} secret(s).",
+                duration_ms as f64 / 1000.0,
+                score,
+                sensitive_found,
+                secrets_found
+            ),
+        );
+    } else {
+        log(
+            "error",
+            &format!(
+                "Scan finished INCOMPLETE in {:.1}s — homepage fetch failed, so the Leak Score is Incomplete (not 0/100).",
+                duration_ms as f64 / 1000.0
+            ),
+        );
+    }
 
     Ok(report)
 }

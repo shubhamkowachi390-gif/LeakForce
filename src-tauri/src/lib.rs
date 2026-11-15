@@ -1,13 +1,14 @@
 mod brute;
 mod engines;
+mod osint;
 pub mod models;
 pub mod reports;
 pub mod scanner;
 mod storage;
 
 use models::{
-    combined_report, compute_score, BruteConfig, BruteSummary, HistoryEntry, LogEvent, ScanReport,
-    Session, SessionView, Settings,
+    combined_report, compute_score, BruteConfig, BruteSummary, ConnectionDiag, HistoryEntry,
+    LogEvent, OsintReport, ScanReport, Session, SessionView, Settings,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub brute_stop_requested: AtomicBool,
     pub brute_running: AtomicBool,
     pub scan_running: AtomicBool,
+    pub osint_running: AtomicBool,
+    pub last_osint: Mutex<Option<OsintReport>>,
 }
 
 #[derive(Serialize)]
@@ -147,6 +150,183 @@ async fn run_bruteforce(
 #[tauri::command]
 fn stop_bruteforce(state: State<'_, AppState>) -> Result<(), String> {
     brute::stop(&state)
+}
+
+/// Passive OSINT collection (crt.sh, homepage metadata, optional theHarvester).
+/// `authorized` must be true — the user confirms the domain is in scope before
+/// anything is queried.
+#[tauri::command]
+async fn run_osint_scan(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    domain: String,
+    authorized: bool,
+    use_harvester: bool,
+) -> Result<OsintReport, String> {
+    if !authorized {
+        return Err(
+            "You must confirm that the domain is in scope (tick the authorization box)."
+                .to_string(),
+        );
+    }
+    if state.scan_running.load(Ordering::SeqCst) {
+        return Err("Wait for the sensitive scan to finish before starting OSINT.".to_string());
+    }
+    if state.osint_running.swap(true, Ordering::SeqCst) {
+        return Err("An OSINT run is already in progress.".to_string());
+    }
+
+    let log_app = app.clone();
+    let log = move |level: &str, message: &str| {
+        let _ = log_app.emit(
+            "osint-log",
+            LogEvent {
+                level: level.to_string(),
+                message: message.to_string(),
+            },
+        );
+    };
+
+    let options = osint::OsintOptions { use_harvester };
+    let result = osint::run_osint(&domain, options, log).await;
+    state.osint_running.store(false, Ordering::SeqCst);
+
+    let report = match result {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = app.emit(
+                "osint-log",
+                LogEvent {
+                    level: "error".to_string(),
+                    message: error.clone(),
+                },
+            );
+            return Err(error);
+        }
+    };
+
+    if let Ok(mut history) = state.history.lock() {
+        storage::push_history(
+            &state.data_dir,
+            &mut history,
+            HistoryEntry {
+                id: report.id.clone(),
+                date: report.finished_at.clone(),
+                target: report.domain.clone(),
+                kind: "OSINT".to_string(),
+                score: 0,
+                summary: format!(
+                    "{} subdomain(s), {} e-mail(s), sources: {}",
+                    report.subdomains.len(),
+                    report.emails.len(),
+                    if report.sources.is_empty() {
+                        "none".to_string()
+                    } else {
+                        report.sources.join(", ")
+                    }
+                ),
+            },
+        );
+    }
+
+    if let Ok(mut slot) = state.last_osint.lock() {
+        *slot = Some(report.clone());
+    }
+
+    Ok(report)
+}
+
+/// Export the most recent OSINT run as TXT or JSON into the exports folder.
+#[tauri::command]
+fn export_osint_report(
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<String, String> {
+    let guard = state
+        .last_osint
+        .lock()
+        .map_err(|_| "OSINT lock failed".to_string())?;
+    let report = guard
+        .as_ref()
+        .ok_or_else(|| "No OSINT report yet — run OSINT first.".to_string())?;
+    osint::export_osint(&kind, report)
+}
+
+/// Connection diagnostics for the UI "Test Connection" button: proves the
+/// shared HTTP client reaches real HTTPS sites by reporting every stage
+/// (DNS, TCP, TLS, HTTP status) with timings.
+#[tauri::command]
+async fn test_connection() -> Result<Vec<ConnectionDiag>, String> {
+    const TARGETS: [&str; 3] = [
+        "https://example.com",
+        "https://testphp.vulnweb.com",
+        "https://demo.testfire.net",
+    ];
+
+    let client = scanner::build_shared_client()?;
+    let mut results = Vec::new();
+
+    for url in TARGETS {
+        let started = std::time::Instant::now();
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_string))
+            .unwrap_or_else(|| url.to_string());
+
+        // Stage 1: DNS
+        let (dns_ok, dns_ips) = match tokio::net::lookup_host((host.as_str(), 443u16)).await {
+            Ok(addresses) => {
+                let mut ips: Vec<std::net::IpAddr> = addresses.map(|a| a.ip()).collect();
+                ips.sort_by_key(|ip| !ip.is_ipv4());
+                (true, ips.iter().take(3).map(ToString::to_string).collect())
+            }
+            Err(_) => (false, Vec::new()),
+        };
+
+        // Stage 2: TCP connect to :443
+        let tcp_ok = if dns_ok {
+            use tokio::net::TcpStream;
+            let first_ip = dns_ips
+                .first()
+                .and_then(|text| text.parse::<std::net::IpAddr>().ok());
+            match first_ip {
+                Some(ip) => tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    TcpStream::connect(std::net::SocketAddr::new(ip, 443)),
+                )
+                .await
+                .map(|result| result.is_ok())
+                .unwrap_or(false),
+                None => false,
+            }
+        } else {
+            false
+        };
+
+        // Stage 3+4: TLS and HTTP (the fetch only returns a status when TLS
+        // completed, so tls_ok is implied by a status).
+        let (tls_ok, http_status, error) = match scanner::fetch_limited_with_timeout(
+            &client, url, 65_536, None,
+        )
+        .await
+        {
+            Ok(fetched) => (true, Some(fetched.status), None),
+            Err(message) => (false, None, Some(message)),
+        };
+
+        results.push(ConnectionDiag {
+            url: url.to_string(),
+            dns_ips,
+            dns_ok,
+            tcp_ok,
+            tls_ok,
+            http_status,
+            ms: started.elapsed().as_millis() as u64,
+            error,
+        });
+    }
+
+    Ok(results)
 }
 
 #[tauri::command]
@@ -373,6 +553,8 @@ pub fn run() {
                 brute_stop_requested: AtomicBool::new(false),
                 brute_running: AtomicBool::new(false),
                 scan_running: AtomicBool::new(false),
+                osint_running: AtomicBool::new(false),
+                last_osint: Mutex::new(None),
             });
 
             Ok(())
@@ -381,6 +563,9 @@ pub fn run() {
             run_sensitive_scan,
             run_bruteforce,
             stop_bruteforce,
+            run_osint_scan,
+            export_osint_report,
+            test_connection,
             get_session,
             reveal_secret,
             get_settings,

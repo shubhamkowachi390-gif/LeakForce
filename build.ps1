@@ -1,4 +1,4 @@
-# LeakForce v1.1.1 - one-command Windows build
+# LeakForce v1.2.0 - one-command Windows build
 #
 # Usage (PowerShell, from this folder):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
@@ -28,7 +28,7 @@ function Require-Command($name, $hint) {
     }
 }
 
-Write-Host "LeakForce v1.1.1 build" -ForegroundColor Green
+Write-Host "LeakForce v1.2.0 build" -ForegroundColor Green
 Write-Host "Project: $root"
 
 Write-Step "Checking required tools"

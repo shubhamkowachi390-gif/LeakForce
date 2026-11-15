@@ -1,12 +1,12 @@
-# LeakForce v1.1.1 - Tested Checklist
+# LeakForce v1.2.0 - Tested Checklist
 
 This file records what was actually tested, how it was tested, and what still needs
 manual checking. Nothing here is aspirational: every "PASS" below was run on this
 machine against localhost-only mock labs.
 
-- **Test date:** 2026-11-14
+- **Test date:** 2026-11-15
 - **OS:** Windows (x64), screen 1366x768
-- **App:** LeakForce v1.1.1 (release build)
+- **App:** LeakForce v1.2.0 (release build)
 - **Rust:** 1.100.0 (MSVC)
 - **Node.js:** v26.13.1
 - **Java:** Temurin JDK 17.0.21 (`C:\tools\jdk17`)
@@ -33,6 +33,30 @@ No third-party website was scanned or brute-forced.
 | 9 | Rust unit tests v1.1.1 (6 tests, incl. brute form pre-check) | `cd src-tauri; cargo test` | **PASS 6/6** |
 | 10 | Scanner end-to-end v1.1.1 (6 tests, incl. port verification + unreachable target) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 6/6** |
 | 11 | Real-target check harness (`testphp.vulnweb.com`) | `cargo test --test real_target_check -- --ignored --nocapture` | **PASS** (site unreachable from this build machine — see below) |
+| 12 | Rust unit tests v1.2.0 (13 tests, incl. OSINT parsing) | `cd src-tauri; cargo test` | **PASS 13/13** |
+| 13 | Scanner end-to-end v1.2.0 (6 tests) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 6/6** |
+
+### v1.2.0 additions
+
+1. **OSINT module (Rust, new)** — unit tests for `normalize_domain`, `extract_emails`,
+   `parse_crtsh`, `parse_harvester_output` (object and list formats), page-title
+   extraction and TXT export rendering. **PASS 13/13**
+2. **HTTP engine rebuild** — verified against live sites with `curl.exe` first
+   (documented behaviour the client must match):
+   - `https://example.com` → `curl -4` returns **HTTP 200** (plain curl resolves
+     IPv6 first and times out on this machine's broken IPv6 path — exactly the
+     symptom reported; the client now prefers IPv4 like browsers do).
+   - `https://demo.testfire.net` → plain TLS fails with
+     `SEC_E_CERT_EXPIRED`; with certificate validation relaxed it returns
+     **HTTP 200**. The scan falls back to tolerant TLS in lab mode with a loud
+     warning, same as clicking through the browser warning.
+   - `https://testphp.vulnweb.com` → blocked at the network level from this build
+     machine (TCP connect times out on ports 80/443 from PowerShell and curl
+     alike). Detailed stage errors are produced instead of the old
+     "error sending request".
+3. **Test Connection** — Rust command `test_connection` runs DNS / TCP / TLS /
+   HTTP stages for `example.com`, `testphp.vulnweb.com` and `demo.testfire.net`
+   and the UI button prints a per-stage line for each target.
 
 ### v1.1.1 bug-fix verification (localhost equivalents)
 
