@@ -9,6 +9,21 @@ open database ports, and (only with your confirmation) weak login passwords on l
 It can also run passive OSINT research (public data only). Everything runs locally on
 your PC. Nothing is uploaded anywhere. 🔒
 
+### 🆕 v1.2.1 — private OSINT sources + brute TLS fallback
+
+6. 🔑 **Private / paid OSINT sources (optional)** — in the OSINT section, tick
+   *Also run theHarvester* and a **Private / paid sources** panel appears where
+   you can paste optional **Shodan** and **Hunter** API keys. With keys present
+   LeakForce adds the `shodan` (hosts / IPs) and `hunter` (e-mails) engines to
+   theHarvester and writes them to `~/.theHarvester/api-keys.yaml` — the keys
+   stay on your PC, they are never sent anywhere except to theHarvester's own
+   API calls. Without keys everything works exactly as before (public sources).
+   Keys are remembered locally between runs.
+7. 🔐 **Brute-force pre-check hardened** — the login-page pre-check now uses the
+   same lab-mode tolerant-TLS fallback for expired certificates and reports
+   detailed stage errors (DNS / TCP / TLS / timeout) instead of the raw
+   `error sending request for url (https://demo.testfire.net/admin/)` message.
+
 ### 🆕 v1.2.0 — OSINT module + rebuilt HTTP engine
 
 1. 🔍 **OSINT section (new sidebar page)** — passive public-data research for one domain:
@@ -76,7 +91,7 @@ your PC. Nothing is uploaded anywhere. 🔒
 | **JavaScript Secret Finder** | Downloads same-origin scripts and scans them with a Python regex engine for AWS keys, Google API keys, Slack tokens, JWT tokens, passwords, API keys, generic secrets, tokens, MongoDB/MySQL/PostgreSQL URIs and private keys. Deep Scan also scans `.map` source maps. Secrets are **masked by default**; a **Reveal** button in the findings table shows the full value on screen only. Exports and history always stay masked. |
 | **Port Check** | Connect-only check for common database ports: MongoDB 27017, Redis 6379, Elasticsearch 9200, MySQL 3306, PostgreSQL 5432. Deep Scan adds MSSQL, Oracle, RabbitMQ, CouchDB, Memcached, Consul, Docker API, Kafka and common dev ports. It never tries to log in. |
 | **Login Test (lab only)** | Auto-detects a standard HTML login form, tries the built-in default credentials and the top-1000 password list (or your own wordlist such as `rockyou.txt`), and stops immediately on success, lockout, HTTP 429, or CAPTCHA. |
-| **OSINT (passive)** | Own sidebar section. Public-data research for one domain: crt.sh subdomains, homepage e-mails/title, optional local theHarvester. No probing, no logins — Info/Low findings only. |
+| **OSINT (passive)** | Own sidebar section. Public-data research for one domain: crt.sh subdomains, homepage e-mails/title, optional local theHarvester **+ optional private Shodan/Hunter sources via API keys**. No probing, no logins — Info/Low findings only. |
 | **Dashboard & Reports** | Leak Score 0-100, severity filters, search, copy buttons, live log, history of the last 20 runs, and TXT / JSON / HTML exports. |
 
 ### 🧮 How the score works (exactly the same in UI, TXT, JSON and HTML)

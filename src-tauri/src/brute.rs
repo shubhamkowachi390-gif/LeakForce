@@ -45,6 +45,7 @@ fn normalize_brute_target(input: &str) -> Result<String, String> {
 /// form the run stops here with a clear error instead of a 0-attempt run.
 async fn resolve_brute_target(target: &str) -> Result<String, String> {
     let client = crate::scanner::build_shared_client()?;
+    let relaxed = crate::scanner::build_shared_client_tolerant()?;
     let candidates: Vec<String> =
         if target.to_lowercase().starts_with("http://") || target.to_lowercase().starts_with("https://") {
             vec![target.to_string()]
@@ -54,12 +55,38 @@ async fn resolve_brute_target(target: &str) -> Result<String, String> {
 
     let mut last_error = String::new();
     for candidate in candidates {
+        let active_client = |error: &str| {
+            // Lab-mode fallback: if TLS failed because the site's own
+            // certificate is invalid/expired, retry once without validation
+            // (the browser would show a warning the user clicks through).
+            let lowered = error.to_lowercase();
+            lowered.contains("certificate") || lowered.contains("tls handshake failed")
+        };
         let response = match client.get(&candidate).send().await {
-            Ok(response) => response,
+            Ok(response) => Some(response),
             Err(error) => {
-                last_error = format!("{candidate} — {error}");
-                continue;
+                if active_client(&error.to_string()) {
+                    match relaxed.get(&candidate).send().await {
+                        Ok(response) => Some(response),
+                        Err(retry_error) => {
+                            last_error = format!(
+                                "{candidate} — {}",
+                                crate::scanner::describe_request_error(&retry_error, &candidate)
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    last_error = format!(
+                        "{candidate} — {}",
+                        crate::scanner::describe_request_error(&error, &candidate)
+                    );
+                    None
+                }
             }
+        };
+        let Some(response) = response else {
+            continue;
         };
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();

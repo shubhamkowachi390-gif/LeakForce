@@ -162,6 +162,8 @@ async fn run_osint_scan(
     domain: String,
     authorized: bool,
     use_harvester: bool,
+    shodan_key: Option<String>,
+    hunter_key: Option<String>,
 ) -> Result<OsintReport, String> {
     if !authorized {
         return Err(
@@ -187,7 +189,11 @@ async fn run_osint_scan(
         );
     };
 
-    let options = osint::OsintOptions { use_harvester };
+    let options = osint::OsintOptions {
+        use_harvester,
+        shodan_key: shodan_key.unwrap_or_default(),
+        hunter_key: hunter_key.unwrap_or_default(),
+    };
     let result = osint::run_osint(&domain, options, log).await;
     state.osint_running.store(false, Ordering::SeqCst);
 

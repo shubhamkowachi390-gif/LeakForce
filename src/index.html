@@ -393,6 +393,21 @@
                 </div>
               </div>
 
+              <div id="osint-private-sources" class="hidden rounded-lg border border-slate-800 bg-slate-900/40 p-3 space-y-2">
+                <div class="text-[10px] uppercase tracking-wider text-slate-500">Private / paid sources (optional)</div>
+                <p class="text-[11px] text-slate-500">Agar tere paas API keys hain to daal de — Shodan (hosts/IPs) aur Hunter (e-mails) ka deep data bhi collect hoga. Keys sirf tere PC pe rehti hain.</p>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div>
+                    <label class="label" for="osint-shodan-key">Shodan API key</label>
+                    <input id="osint-shodan-key" class="input font-mono text-xs" type="password" spellcheck="false" autocomplete="off" placeholder="optional" />
+                  </div>
+                  <div>
+                    <label class="label" for="osint-hunter-key">Hunter API key</label>
+                    <input id="osint-hunter-key" class="input font-mono text-xs" type="password" spellcheck="false" autocomplete="off" placeholder="optional" />
+                  </div>
+                </div>
+              </div>
+
               <div class="flex flex-wrap items-center gap-3">
                 <button id="osint-start" class="btn btn-primary px-6">Start OSINT</button>
                 <button id="osint-copy" class="btn btn-secondary" disabled>Copy all findings</button>

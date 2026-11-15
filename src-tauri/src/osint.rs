@@ -26,9 +26,60 @@ const HARVESTER_TIMEOUT: Duration = Duration::from_secs(300);
 /// curated passive set works without any API key and finishes in time.
 const HARVESTER_ENGINES: &str = "crtsh,otx,duckduckgo,bing,urlscan";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OsintOptions {
     pub use_harvester: bool,
+    /// Optional API keys for the private/paid theHarvester sources. Empty
+    /// string means "not provided" — the public sources run either way.
+    pub shodan_key: String,
+    pub hunter_key: String,
+}
+
+/// Engines that need an API key, and the source name they map to.
+fn harvester_engines(options: &OsintOptions) -> String {
+    let mut engines = HARVESTER_ENGINES.to_string();
+    if !options.shodan_key.trim().is_empty() {
+        engines.push_str(",shodan");
+    }
+    if !options.hunter_key.trim().is_empty() {
+        engines.push_str(",hunter");
+    }
+    engines
+}
+
+/// Write the theHarvester API-keys config (`~/.theHarvester/api-keys.yaml`).
+/// Only the two keys the user provided get values; every other engine keeps
+/// an empty key so theHarvester keeps working exactly as before.
+pub fn write_harvester_keys(options: &OsintOptions) -> Result<Option<std::path::PathBuf>, String> {
+    let shodan = options.shodan_key.trim();
+    let hunter = options.hunter_key.trim();
+    if shodan.is_empty() && hunter.is_empty() {
+        return Ok(None);
+    }
+    let dir = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| "~".to_string()))
+        .join(".theHarvester");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join("api-keys.yaml");
+    let mut yaml = String::from("apikeys:\n");
+    for engine in [
+        "bevigil", "binaryedge", "bing", "bufferoverun", "criminalip", "fullhunt", "github",
+        "hunterhow", "intelx", "netlas", "onyphe", "pentestTools", "projectDiscovery",
+        "rocketreach", "securityTrails", "tomba", "virustotal", "zoomeye",
+    ] {
+        let _ = std::fmt::Write::write_fmt(&mut yaml, format_args!("  {engine}:\n    key:\n"));
+    }
+    let _ = std::fmt::Write::write_fmt(
+        &mut yaml,
+        format_args!("  shodan:\n    key: {shodan}\n"),
+    );
+    let _ = std::fmt::Write::write_fmt(
+        &mut yaml,
+        format_args!("  hunter:\n    key: {hunter}\n"),
+    );
+    // censys needs id+secret; keep the empty shape so loaders don't break.
+    let _ = std::fmt::Write::write_fmt(&mut yaml, format_args!("  censys:\n    id:\n    secret:\n"));
+    std::fs::write(&path, yaml).map_err(|error| error.to_string())?;
+    Ok(Some(path))
 }
 
 // ---------------------------------------------------------------------------
@@ -213,18 +264,26 @@ async fn find_harvester() -> Option<String> {
 async fn run_harvester<F>(
     harvester_path: &str,
     domain: &str,
+    options: &OsintOptions,
     log: &F,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>, Vec<String>), String>
 where
     F: Fn(&str, &str) + Send + Sync,
 {
+    let engines = harvester_engines(options);
+    if !options.shodan_key.trim().is_empty() {
+        log("info", "Shodan API key detected — adding the shodan (private) source.");
+    }
+    if !options.hunter_key.trim().is_empty() {
+        log("info", "Hunter API key detected — adding the hunter (private) e-mail source.");
+    }
     let json_path = std::env::temp_dir().join(format!("leakforce-harvester-{}.json", Uuid::new_v4()));
     let mut command = tokio::process::Command::new(harvester_path);
     command
         .arg("-d")
         .arg(domain)
         .arg("-b")
-        .arg(HARVESTER_ENGINES)
+        .arg(&engines)
         .arg("-f")
         .arg(&json_path)
         .env("PYTHONIOENCODING", "utf-8")
@@ -398,7 +457,18 @@ where
     if options.use_harvester {
         if let Some(path) = find_harvester().await {
             harvester_available = true;
-            match run_harvester(&path, &domain, &log).await {
+            // Private/paid sources: write the user's API keys (if any) to the
+            // theHarvester config so shodan/hunter engines can run.
+            if let Some(config_path) = write_harvester_keys(&options)? {
+                log(
+                    "info",
+                    &format!(
+                        "API-key sources enabled — config written to {}",
+                        config_path.display()
+                    ),
+                );
+            }
+            match run_harvester(&path, &domain, &options, &log).await {
                 Ok((hosts, harvester_emails, harvester_ips, harvester_urls)) => {
                     log(
                         "success",
@@ -530,6 +600,28 @@ fn render_osint_txt(report: &OsintReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harvester_engine_list_includes_private_sources() {
+        let public = OsintOptions {
+            use_harvester: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            harvester_engines(&public),
+            "crtsh,otx,duckduckgo,bing,urlscan"
+        );
+        let private = OsintOptions {
+            use_harvester: true,
+            shodan_key: "SHODANKEY".into(),
+            hunter_key: "  HUNTERKEY  ".into(),
+        };
+        assert_eq!(
+            harvester_engines(&private),
+            "crtsh,otx,duckduckgo,bing,urlscan,shodan,hunter"
+        );
+        assert!(harvester_engines(&public).ends_with("urlscan"));
+    }
 
     #[test]
     fn domain_normalization() {

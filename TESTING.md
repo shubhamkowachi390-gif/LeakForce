@@ -35,6 +35,22 @@ No third-party website was scanned or brute-forced.
 | 11 | Real-target check harness (`testphp.vulnweb.com`) | `cargo test --test real_target_check -- --ignored --nocapture` | **PASS** (site unreachable from this build machine — see below) |
 | 12 | Rust unit tests v1.2.0 (13 tests, incl. OSINT parsing) | `cd src-tauri; cargo test` | **PASS 13/13** |
 | 13 | Scanner end-to-end v1.2.0 (6 tests) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 6/6** |
+| 14 | Rust unit tests v1.2.1 (14 tests, incl. private-source engine list + brute TLS fallback) | `cd src-tauri; cargo test` | **PASS 14/14** |
+| 15 | Real-target OSINT + theHarvester e2e (`demo.testfire.net`, harvester_used=true) | `cargo test --test real_target_check testfire_osint_with_harvester -- --ignored --nocapture` | **PASS (51 s)** |
+
+### v1.2.1 additions
+
+1. **Private / paid OSINT sources** — `harvester_engine_list_includes_private_sources`
+   proves the engine list is `crtsh,otx,duckduckgo,bing,urlscan` without keys and
+   appends `,shodan,hunter` when API keys are provided (keys trimmed). `run_osint_scan`
+   accepts `shodan_key` / `hunter_key` and `write_harvester_keys` writes them to
+   `~/.theHarvester/api-keys.yaml`, leaving every other engine empty. The UI keys are
+   saved in localStorage and the panel only shows when theHarvester is ticked.
+2. **Brute-force TLS fallback** — `resolve_brute_target` retries once without
+   certificate validation when the site's certificate is expired/invalid, and
+   formats all failures through `describe_request_error` so the user sees the
+   network stage (DNS / TCP / TLS / timeout) instead of the raw reqwest message.
+   Manually verified against `https://demo.testfire.net/login.jsp` (expired cert).
 
 ### v1.2.0 additions
 

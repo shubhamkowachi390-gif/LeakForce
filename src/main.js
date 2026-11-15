@@ -1217,7 +1217,7 @@
 
   function osintResetUI() {
     state.osintRunning = false;
-    ["osint-domain", "osint-harvester", "osint-authorize"].forEach((id) => {
+    ["osint-domain", "osint-harvester", "osint-authorize", "osint-shodan-key", "osint-hunter-key"].forEach((id) => {
       const node = document.getElementById(id);
       if (node) node.disabled = false;
     });
@@ -1304,7 +1304,7 @@
       return;
     }
     state.osintRunning = true;
-    ["osint-domain", "osint-harvester", "osint-authorize"].forEach((id) => {
+    ["osint-domain", "osint-harvester", "osint-authorize", "osint-shodan-key", "osint-hunter-key"].forEach((id) => {
       document.getElementById(id).disabled = true;
     });
     $("#osint-start").disabled = true;
@@ -1321,12 +1321,19 @@
     $("#osint-duration").textContent = "";
     $("#osint-status").textContent = "Running…";
 
+    // Save the API keys as soon as the run starts (they may not have blurred).
+    ["osint-shodan-key", "osint-hunter-key"].forEach((id) => {
+      const input = document.getElementById(id);
+      if (input) localStorage.setItem(`leakforce-${id}`, input.value.trim());
+    });
     const started = Date.now();
     try {
       const report = await invoke("run_osint_scan", {
         domain,
         authorized: true,
         useHarvester: $("#osint-harvester").checked,
+        shodanKey: $("#osint-shodan-key").value.trim() || null,
+        hunterKey: $("#osint-hunter-key").value.trim() || null,
       });
       osintRenderFindings(report);
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
@@ -1410,6 +1417,22 @@
     $("#brute-browse").addEventListener("click", () => browseWordlist("brute-wordlist-path"));
 
     $("#osint-start").addEventListener("click", startOsint);
+    // Private/paid sources panel: only relevant when theHarvester is enabled.
+    const harvesterToggle = $("#osint-harvester");
+    const privatePanel = $("#osint-private-sources");
+    const syncPrivatePanel = () => {
+      privatePanel.classList.toggle("hidden", !harvesterToggle.checked);
+    };
+    harvesterToggle.addEventListener("change", syncPrivatePanel);
+    ["osint-shodan-key", "osint-hunter-key"].forEach((id) => {
+      const input = document.getElementById(id);
+      const saved = localStorage.getItem(`leakforce-${id}`);
+      if (saved) input.value = saved;
+      input.addEventListener("input", () => {
+        localStorage.setItem(`leakforce-${id}`, input.value.trim());
+      });
+    });
+    syncPrivatePanel();
     $("#osint-copy").addEventListener("click", async () => {
       const rows = state.osintFindings || [];
       if (!rows.length) return;
