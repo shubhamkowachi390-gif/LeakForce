@@ -62,7 +62,7 @@ public final class LeakForceWorker {
             String action = cfg.getOrDefault("action", "").trim();
             String method = cfg.getOrDefault("method", "post").trim().toUpperCase(Locale.ROOT);
             int delayMs = intValue(cfg.get("delayMs"), 1000);
-            int concurrency = Math.max(1, Math.min(5, intValue(cfg.get("concurrency"), 1)));
+            int concurrency = Math.max(1, Math.min(10, intValue(cfg.get("concurrency"), 1)));
             int timeoutMs = intValue(cfg.get("timeoutMs"), 15000);
 
             if (action.isEmpty() || tasks.isEmpty()) {

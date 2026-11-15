@@ -654,7 +654,7 @@ def _success_indicators(text):
 
 
 def _classify(status, location, body, baseline):
-    """Return (result, reason). result is success | lockout | fail."""
+    """Return (result, reason). result is success | lockout | captcha | fail."""
     low = body.lower()
 
     lock_reason = _find_pattern(LOCKOUT_PATTERNS, low)
@@ -663,7 +663,7 @@ def _classify(status, location, body, baseline):
     if lock_reason:
         return "lockout", f"Lockout page detected: '{lock_reason}'"
     if CAPTCHA_HTML_RE.search(body):
-        return "lockout", "CAPTCHA detected in the login response"
+        return "captcha", "CAPTCHA challenge in the response (tool does not solve it)"
     if status == 403 and ("blocked" in low or "denied" in low):
         return "lockout", "HTTP 403 with blocked/denied response"
 
@@ -773,8 +773,8 @@ def run_brute_controller(config_path):
         if parsed.scheme not in ("http", "https"):
             raise RuntimeError("Target must start with http:// or https://")
 
-        delay_ms = max(250, int(config.get("delayMs", 1000)))
-        concurrency = min(5, max(1, int(config.get("concurrency", 1))))
+        delay_ms = max(100, int(config.get("delayMs", 1000)))
+        concurrency = min(10, max(1, int(config.get("concurrency", 1))))
         java_path = config.get("javaPath") or "java"
         jar_path = config.get("jarPath") or ""
         if not jar_path or not os.path.isfile(jar_path):
@@ -797,15 +797,11 @@ def run_brute_controller(config_path):
             raise RuntimeError(f"Login page returned HTTP {status}")
 
         if CAPTCHA_HTML_RE.search(html):
-            emit(
-                "done",
-                status="error",
-                success=False,
-                attempts=0,
-                reason="CAPTCHA detected on the login page. The tool will not attempt to bypass it.",
-                durationMs=int((time.time() - started) * 1000),
+            log(
+                "CAPTCHA detected on the login page — continuing WITHOUT solving it. "
+                "Attempts may fail if the server validates the CAPTCHA token.",
+                "warning",
             )
-            return 0
 
         form = detect_login_form(html, final_url)
         if not form:
@@ -991,6 +987,8 @@ def run_brute_controller(config_path):
         stop_reason = ""
         success_username = ""
         success_password = ""
+        captcha_streak = 0
+        captcha_stopped = False
 
         for line in worker.stdout:
             line = line.strip()
@@ -1028,6 +1026,29 @@ def run_brute_controller(config_path):
                 remainingText=_remaining_text(total, attempts, delay_ms),
                 elapsedMs=event.get("elapsedMs", 0),
             )
+
+            if result == "captcha":
+                # CAPTCHA in a response means the target is challenging this
+                # attempt. The tool never solves or forges a token, so these
+                # attempts simply do not count as failures — but if the target
+                # keeps challenging everything, continuing would be pointless.
+                captcha_streak += 1
+                if captcha_streak >= 25:
+                    captcha_stopped = True
+                    stop_reason = (
+                        f"Target is actively serving CAPTCHA challenges "
+                        f"({captcha_streak} consecutive responses). The tool does not "
+                        "solve CAPTCHAs, so testing stopped here."
+                    )
+                    log(stop_reason, "error")
+                    try:
+                        worker.stdin.write("STOP\n")
+                        worker.stdin.flush()
+                    except Exception:
+                        pass
+                    break
+            else:
+                captcha_streak = 0
 
             if result == "lockout":
                 lockout = True
@@ -1074,6 +1095,9 @@ def run_brute_controller(config_path):
         elif lockout:
             summary_status = "lockout"
             summary_reason = stop_reason or "Possible account lockout detected."
+        elif captcha_stopped:
+            summary_status = "captcha"
+            summary_reason = stop_reason or "Target kept serving CAPTCHA challenges."
         elif attempts >= total:
             summary_status = "failed"
             summary_reason = "All attempts completed without a successful login."

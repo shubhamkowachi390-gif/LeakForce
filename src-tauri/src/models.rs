@@ -201,8 +201,8 @@ impl Default for Settings {
 
 impl Settings {
     pub fn sanitized(mut self) -> Self {
-        self.delay_ms = self.delay_ms.clamp(250, 10_000);
-        self.concurrency = self.concurrency.clamp(1, 5);
+        self.delay_ms = self.delay_ms.clamp(100, 10_000);
+        self.concurrency = self.concurrency.clamp(1, 10);
         if self.python_executable.trim().is_empty() {
             self.python_executable = "python".to_string();
         }

@@ -139,8 +139,8 @@ async fn run_inner(
     // Bug #4 fix: fetch the login page first, require a real login form, and
     // never start the wordlist against a homepage without one.
     let target = resolve_brute_target(&requested).await?;
-    let delay_ms = config.delay_ms.clamp(250, 10_000);
-    let concurrency = config.concurrency.clamp(1, 5);
+    let delay_ms = config.delay_ms.clamp(100, 10_000);
+    let concurrency = config.concurrency.clamp(1, 10);
     let settings = state
         .settings
         .lock()

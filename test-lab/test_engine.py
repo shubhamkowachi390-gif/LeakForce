@@ -119,15 +119,19 @@ class FormDetectionTests(unittest.TestCase):
             engine.CAPTCHA_HTML_RE.search('<div class="g-recaptcha" data-sitekey="x"></div>')
         )
 
-    def test_captcha_response_stops_test(self):
+    def test_captcha_response_classified_not_stopped(self):
+        # CAPTCHA in a response is classified as "captcha" (amber), the run
+        # continues without solving anything; the hard stop was removed in
+        # favour of a 25-consecutive-challenge threshold in the main loop.
         result, reason = engine._classify(
             200,
             "",
             '<div class="g-recaptcha" data-sitekey="x"></div>',
             {},
         )
-        self.assertEqual(result, "lockout")
+        self.assertEqual(result, "captcha")
         self.assertIn("CAPTCHA", reason)
+        self.assertIn("does not solve", reason)
 
 
 if __name__ == "__main__":

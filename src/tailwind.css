@@ -165,6 +165,9 @@
   .attempt-lockout {
     @apply text-red-300;
   }
+  .attempt-captcha {
+    @apply text-amber-300;
+  }
   .attempt-fail {
     @apply text-slate-500;
   }

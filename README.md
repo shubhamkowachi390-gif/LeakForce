@@ -198,7 +198,7 @@ Press `Ctrl+C` in the lab window to stop the mock servers.
 - Built-in password list: `wordlists\top1000-passwords.txt` (1000 entries)
 - Custom wordlist: choose any `.txt` file (for example `rockyou.txt`).
   Very large lists are capped at 200,000 entries for safety.
-- Default delay: **1000 ms** (1 request/second). Minimum: 250 ms. Maximum threads: **5**.
+- Default delay: **1000 ms** (1 request/second). Minimum: **100 ms**. Maximum threads: **10**.
 
 ### ✅ Success output
 
@@ -283,11 +283,14 @@ LeakForce/
 ## 7. Safety limits built into the tool 🛡️
 
 - Brute force cannot start without the permission checkbox **and** a backend `authorized` flag.
-- Default speed is 1 request/second; the UI cannot exceed 5 parallel threads; the backend clamps
-  delay to at least 250 ms and threads to 1-5.
-- Stops immediately on a successful login, lockout text, HTTP 429, HTTP 403 with blocked/denied,
-  or CAPTCHA on the login page.
-- CAPTCHA is detected and never bypassed.
+- Default speed is 1 request/second; the UI cannot exceed 10 parallel threads; the backend clamps
+  delay to at least **100 ms** and threads to 1-10 (authorized targets can go faster, but never unlimited).
+- Stops immediately on a successful login, lockout text, HTTP 429, or HTTP 403
+  with blocked/denied.
+- CAPTCHA on the login page is detected and reported as a warning — the tool **never
+  solves or forges a CAPTCHA token**. Attempts continue without one (they fail naturally
+  if the server validates the token). If the target keeps serving CAPTCHA challenges
+  (25 consecutive responses), testing stops with a clear reason instead of hammering.
 - Port check is connect-only. No database login is attempted.
 - Secrets are masked for display and export. The raw value is passed in memory only to
   power the Reveal button and is never written to disk.

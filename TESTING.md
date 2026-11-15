@@ -188,8 +188,8 @@ the exact reported symptoms:
 | Brute force blocked without backend `authorized` flag | **PASS** (controller test) |
 | Stops on HTTP 429 | **PASS** |
 | Stops on lockout text | **PASS** |
-| Stops on CAPTCHA in login response | **PASS** (Python unit test) |
-| Never bypasses CAPTCHA | **PASS** (no bypass code exists) |
+| Continues on CAPTCHA with a warning (does not solve or forge tokens) | **PASS** (Python unit test) |
+| Stops after 25 consecutive CAPTCHA challenges with clear reason | **PASS** (code review) |
 | Secrets masked by default in UI and always in exports/history | **PASS** (Reveal is UI-only; scanner e2e and export checks assert raw values absent) |
 | Port check is connect-only | **PASS** (code review: TCP connect, no protocol handshake) |
 | No scanning of third-party sites during tests | **PASS** (all targets 127.0.0.1) |

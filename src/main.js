@@ -918,6 +918,8 @@
             ? "SUCCESS"
             : event.result === "lockout"
             ? "Lockout"
+            : event.result === "captcha"
+            ? "CAPTCHA"
             : "failed";
 
         const attempt = el(
@@ -930,7 +932,14 @@
         list.prepend(attempt);
         while (list.childElementCount > 15) list.lastElementChild.remove();
 
-        const level = event.result === "success" ? "success" : event.result === "lockout" ? "error" : "debug";
+        const level =
+          event.result === "success"
+            ? "success"
+            : event.result === "lockout"
+            ? "error"
+            : event.result === "captcha"
+            ? "warning"
+            : "debug";
         addLog(
           level,
           `Attempt #${event.n}: ${event.username || "(none)"} / ${event.password || ""} → HTTP ${event.status ?? 0} (${event.result || "fail"})`
@@ -944,6 +953,8 @@
         } else if (event.result === "lockout") {
           showBruteBanner("warning", "Stopped - possible lockout detected");
           $("#brute-status").textContent = "Lockout detected — stopping";
+        } else if (event.result === "captcha") {
+          $("#brute-status").textContent = "CAPTCHA challenged — continuing (not solving)";
         }
         break;
       }
@@ -964,6 +975,7 @@
         const labels = {
           success: "Success",
           lockout: "Stopped (lockout)",
+          captcha: "Stopped (CAPTCHA challenges)",
           stopped: "Stopped",
           failed: "Completed — no valid credentials",
           error: "Error",
@@ -980,6 +992,12 @@
         } else if (status === "lockout") {
           showBruteBanner("warning", "Stopped - possible lockout detected");
           toast("Stopped: possible lockout detected.", "warning");
+        } else if (status === "captcha") {
+          showBruteBanner(
+            "warning",
+            event.reason || "Target kept serving CAPTCHA challenges (tool does not solve them)."
+          );
+          toast(event.reason || "Target kept serving CAPTCHA challenges.", "warning");
         } else if (status === "error") {
           showBruteBanner("error", event.reason || "Login test failed.");
           toast(event.reason || "Login test failed.", "error");
@@ -1098,8 +1116,8 @@
       pythonEngineOverride: $("#engine-override").value.trim(),
       javaWorkerOverride: $("#jar-override").value.trim(),
       wordlistPath: $("#wordlist-path").value.trim(),
-      delayMs: Math.max(250, Math.min(10000, Number($("#setting-delay").value) || 1000)),
-      concurrency: Math.max(1, Math.min(5, Number($("#setting-concurrency").value) || 1)),
+      delayMs: Math.max(100, Math.min(10000, Number($("#setting-delay").value) || 1000)),
+      concurrency: Math.max(1, Math.min(10, Number($("#setting-concurrency").value) || 1)),
     };
     try {
       state.settings = await invoke("save_settings", { settings });
