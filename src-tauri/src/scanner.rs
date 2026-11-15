@@ -8,12 +8,19 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use url::Url;
 use uuid::Uuid;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-    (KHTML, like Gecko) Chrome/124.0 Safari/537.36 LeakForce/1.0 (authorized lab testing)";
+    (KHTML, like Gecko) Chrome/124.0 Safari/537.36 LeakForce/1.1.1 (authorized lab testing)";
+
+/// Per-request timeout for the sensitive-path probes (speed fix: many paths in
+/// parallel, each with a short timeout).
+const PATH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Parallel sensitive-path requests at a time.
+const PATH_CONCURRENCY: usize = 5;
 
 const SENSITIVE_PATHS: &[&str] = &[
     "/.env",
@@ -193,12 +200,146 @@ fn normalize_target(input: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+/// Single shared HTTP client used by every module (sensitive files, scripts,
+/// source maps and the brute-force pre-check): real browser User-Agent,
+/// up to 5 redirects and a 15-second total timeout.
+pub fn build_shared_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|error| format!("Could not create HTTP client: {error}"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortState {
+    /// TCP connect succeeded AND the service answered (banner or probe reply).
+    VerifiedOpen,
+    /// TCP connect succeeded but the service never answered.
+    Unverified,
+    /// TCP connect failed within the timeout.
+    Closed,
+}
+
+/// HTTP probe sent to HTTP-speaking services when no banner arrives.
+const HTTP_PROBE: &[u8] = b"HEAD / HTTP/1.0\r\nHost: leakforce-scan\r\nConnection: close\r\n\r\n";
+/// Redis PING -> server answers "+PONG".
+const REDIS_PROBE: &[u8] = b"PING\r\n";
+/// Memcached version -> server answers "VERSION ...".
+const MEMCACHED_PROBE: &[u8] = b"version\r\n";
+/// PostgreSQL SSLRequest -> server answers a single byte ('S' or 'N').
+const POSTGRES_PROBE: &[u8] = &[0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f];
+
+fn service_probe(port: u16) -> Option<&'static [u8]> {
+    match port {
+        9200 | 5984 | 8500 | 2375 | 8080 | 8443 | 3000 | 5000 => Some(HTTP_PROBE),
+        6379 => Some(REDIS_PROBE),
+        11211 => Some(MEMCACHED_PROBE),
+        5432 => Some(POSTGRES_PROBE),
+        _ => None,
+    }
+}
+
+fn summarize_bytes(buf: &[u8], n: usize) -> String {
+    let text = String::from_utf8_lossy(&buf[..n]);
+    text.chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(48)
+        .collect()
+}
+
+/// Verify a port the way nmap does: TCP connect (3 s), then read the banner
+/// and, if the service stays silent, send a protocol-specific probe. A plain
+/// TCP connect is never enough to call a port open — that caused the mass
+/// "all database ports open" false positives.
+async fn verify_port(host: &str, port: u16) -> (PortState, String) {
+    let stream = match tokio::time::timeout(
+        Duration::from_secs(3),
+        TcpStream::connect((host, port)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        _ => {
+            return (
+                PortState::Closed,
+                "no TCP connection within 3 seconds".to_string(),
+            )
+        }
+    };
+
+    let mut stream = stream;
+    let mut buf = [0u8; 256];
+
+    // 1) Wait for a banner.
+    if let Ok(Ok(n)) =
+        tokio::time::timeout(Duration::from_millis(1_500), stream.read(&mut buf)).await
+    {
+        if n > 0 {
+            return (
+                PortState::VerifiedOpen,
+                format!("banner: {}", summarize_bytes(&buf, n)),
+            );
+        }
+    }
+
+    // 2) Send a protocol-specific probe and wait for a reply.
+    if let Some(probe) = service_probe(port) {
+        if stream.write_all(probe).await.is_ok() {
+            if let Ok(Ok(n)) =
+                tokio::time::timeout(Duration::from_millis(1_500), stream.read(&mut buf)).await
+            {
+                if n > 0 {
+                    return (
+                        PortState::VerifiedOpen,
+                        format!("probe response: {}", summarize_bytes(&buf, n)),
+                    );
+                }
+            }
+        }
+    }
+
+    (
+        PortState::Unverified,
+        "TCP connect succeeded but no service response".to_string(),
+    )
+}
+
 async fn fetch_limited(client: &Client, url: &str, max_bytes: usize) -> Result<Fetched, String> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+    fetch_limited_with_timeout(client, url, max_bytes, None).await
+}
+
+/// Fetch a URL, streaming at most `max_bytes`. Network errors are retried once.
+/// An optional per-request timeout overrides the client default. The caller
+/// always receives the real HTTP status code inside `Fetched`.
+async fn fetch_limited_with_timeout(
+    client: &Client,
+    url: &str,
+    max_bytes: usize,
+    per_request_timeout: Option<Duration>,
+) -> Result<Fetched, String> {
+    let mut request = client.get(url);
+    if let Some(timeout) = per_request_timeout {
+        request = request.timeout(timeout);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            // One automatic retry for transient network failures.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let mut retry = client.get(url);
+            if let Some(timeout) = per_request_timeout {
+                retry = retry.timeout(timeout);
+            }
+            let retry = retry
+                .send()
+                .await
+                .map_err(|retry_error| format!("{error} (retried once: {retry_error})"))?;
+            retry
+        }
+    };
     let status = response.status().as_u16();
     let final_url = response.url().to_string();
     let content_type = response
@@ -388,24 +529,41 @@ fn make_file_finding(path: &str, url: &str, status: u16) -> Finding {
     }
 }
 
-fn make_port_finding(host: &str, port: u16, service: &str, open: bool) -> Finding {
-    let (severity, state, note) = if open {
-        (
+fn make_port_finding(
+    host: &str,
+    port: u16,
+    service: &str,
+    state: PortState,
+    method: &str,
+) -> Finding {
+    let (severity, title, note) = match state {
+        PortState::VerifiedOpen => (
             "Medium",
-            "is open",
-            "TCP connection succeeded. No login attempt was made.",
-        )
-    } else {
-        ("Info", "is closed", "No TCP connection within 3 seconds.")
+            format!("Port {port} ({service}) open (verified)"),
+            format!(
+                "{host}:{port} · verified by {method} · no login attempt was made"
+            ),
+        ),
+        PortState::Unverified => (
+            "Info",
+            format!("Port {port} ({service}) unverified/filtered"),
+            format!(
+                "{host}:{port} · {method}; connect alone is not proof of an open service"
+            ),
+        ),
+        PortState::Closed => (
+            "Info",
+            format!("Port {port} ({service}) closed"),
+            format!("{host}:{port} · {method}"),
+        ),
     };
-    let title = format!("Port {port} ({service}) {state}");
     Finding {
         id: Uuid::new_v4().to_string(),
         module: "port".to_string(),
         kind: "port".to_string(),
         severity: severity.to_string(),
         title: title.clone(),
-        detail: format!("{host}:{port} · {note}"),
+        detail: note,
         url: None,
         status: None,
         copy: format!("[{severity}] {title} — {host}:{port}"),
@@ -602,19 +760,22 @@ fn collect_source_maps(
     }
 }
 
+/// Run the Python secret engine. Returns the findings plus a flag telling
+/// whether the engine actually completed (used to mark the JavaScript scan
+/// as complete vs failed/incomplete).
 async fn run_python_secret_scan<F>(
     options: &ScanOptions,
     files: &[serde_json::Value],
     errors: &mut Vec<String>,
     log: &F,
-) -> Vec<Finding>
+) -> (Vec<Finding>, bool)
 where
     F: Fn(&str, &str) + Send + Sync,
 {
     let Some(script) = options.engine_script.as_ref() else {
         errors.push("Python secret engine path is not configured.".to_string());
         log("error", "Python secret engine path is not configured.");
-        return Vec::new();
+        return (Vec::new(), false);
     };
     if !script.is_file() {
         errors.push(format!(
@@ -625,10 +786,10 @@ where
             "error",
             &format!("Python secret engine not found: {}", script.display()),
         );
-        return Vec::new();
+        return (Vec::new(), false);
     }
     if files.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     let unique = Uuid::new_v4().to_string();
@@ -644,7 +805,7 @@ where
     .await
     {
         errors.push(format!("Could not write secret-engine input: {error}"));
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     let mut command = tokio::process::Command::new(&options.python);
@@ -681,13 +842,13 @@ where
             errors.push(format!("Could not start Python engine: {error}"));
             log("error", &format!("Could not start Python engine: {error}"));
             let _ = tokio::fs::remove_file(&input_path).await;
-            return Vec::new();
+            return (Vec::new(), false);
         }
         Err(_) => {
             errors.push("Python secret engine timed out after 120 seconds.".to_string());
             log("error", "Python secret engine timed out after 120 seconds.");
             let _ = tokio::fs::remove_file(&input_path).await;
-            return Vec::new();
+            return (Vec::new(), false);
         }
     };
 
@@ -701,7 +862,7 @@ where
         );
         let _ = tokio::fs::remove_file(&input_path).await;
         let _ = tokio::fs::remove_file(&output_path).await;
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     let parsed = match tokio::fs::read_to_string(&output_path).await {
@@ -713,7 +874,7 @@ where
                 &format!("Could not read Python engine output: {error}"),
             );
             let _ = tokio::fs::remove_file(&input_path).await;
-            return Vec::new();
+            return (Vec::new(), false);
         }
     };
 
@@ -728,7 +889,7 @@ where
                 "error",
                 &format!("Invalid Python engine output: {error}"),
             );
-            return Vec::new();
+            return (Vec::new(), false);
         }
     };
 
@@ -781,7 +942,7 @@ where
             findings.len()
         ),
     );
-    findings
+    (findings, true)
 }
 
 /// Run a complete sensitive-information scan.
@@ -812,30 +973,79 @@ where
         );
     }
 
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(12))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|error| format!("Could not create HTTP client: {error}"))?;
+    let client = build_shared_client()?;
 
     let mut errors: Vec<String> = Vec::new();
     let mut findings: Vec<Finding> = Vec::new();
     let mut checks: Vec<FileCheck> = Vec::new();
+
+    // --- Homepage fetch (single shared client) ----------------------------
+    // The homepage gates both the JavaScript-secret module and the
+    // sensitive-file module: without a successful fetch neither module may
+    // report a clean "0 findings" result.
+    let mut page: Option<Fetched> = None;
+    let mut homepage_reachable = false;
+    let mut file_scan_failed = false;
+    let mut js_scan_failed = false;
+
+    match fetch_limited(&client, url.as_str(), 2_097_152).await {
+        Ok(fetched) => {
+            homepage_reachable = true;
+            log(
+                "info",
+                &format!(
+                    "Homepage: HTTP {} ({}, {} bytes).",
+                    fetched.status,
+                    if fetched.content_type.is_empty() {
+                        "unknown type"
+                    } else {
+                        short_content_type(&fetched.content_type)
+                    },
+                    fetched.len
+                ),
+            );
+            if fetched.status != 200 {
+                log(
+                    "warning",
+                    &format!(
+                        "Homepage returned HTTP {} — JavaScript secret analysis will be incomplete.",
+                        fetched.status
+                    ),
+                );
+            }
+            page = Some(fetched);
+        }
+        Err(error) => {
+            file_scan_failed = true;
+            js_scan_failed = true;
+            let message = format!("Could not fetch the target homepage: {error}");
+            errors.push(message.clone());
+            log("error", &message);
+            log(
+                "error",
+                "JavaScript scan: Failed - Incomplete, secrets not checked.",
+            );
+            log(
+                "error",
+                "Sensitive file scan: Failed - Incomplete, target could not be fetched.",
+            );
+        }
+    }
 
     // --- Soft-404 baseline ------------------------------------------------
     let baseline_url = format!(
         "{origin}/leakforce-random-{}.txt",
         &Uuid::new_v4().simple().to_string()[..10]
     );
-    let baseline = match fetch_limited(&client, &baseline_url, 65_536).await {
-        Ok(fetched) => {
-            log(
-                "info",
-                &format!(
-                    "Soft-404 baseline: HTTP {} ({} bytes).",
-                    fetched.status, fetched.len
-                ),
+    let baseline = if homepage_reachable {
+        match fetch_limited_with_timeout(&client, &baseline_url, 65_536, Some(PATH_TIMEOUT)).await {
+            Ok(fetched) => {
+                log(
+                    "info",
+                    &format!(
+                        "Soft-404 baseline: HTTP {} ({} bytes).",
+                        fetched.status, fetched.len
+                    ),
             );
             Some(fetched)
         }
@@ -846,6 +1056,9 @@ where
             );
             None
         }
+        }
+    } else {
+        None
     };
 
     // --- Fixed sensitive paths (plus Deep Scan extras) --------------------
@@ -863,29 +1076,44 @@ where
     let total_paths = paths.len();
     let path_list: Vec<(usize, String)> = paths.iter().cloned().enumerate().collect();
 
-    let mut probes: Vec<(usize, String, Result<Fetched, String>)> =
+    let mut probes: Vec<(usize, String, Result<Fetched, String>)> = if file_scan_failed {
+        Vec::new()
+    } else {
         stream::iter(path_list)
             .map(|(index, path)| {
                 let client = client.clone();
                 let target_url = format!("{origin}{path}");
                 async move {
-                    let result = fetch_limited(&client, &target_url, 65_536).await;
+                    let result =
+                        fetch_limited_with_timeout(&client, &target_url, 65_536, Some(PATH_TIMEOUT))
+                            .await;
                     (index, path, result)
                 }
             })
-            .buffer_unordered(8)
+            .buffer_unordered(PATH_CONCURRENCY)
             .collect()
-            .await;
+            .await
+    };
     probes.sort_by_key(|(index, _, _)| *index);
 
-    log(
-        "info",
-        &format!(
-            "Checked {} sensitive paths{}.",
-            total_paths,
-            if deep { " (deep scan)" } else { "" }
-        ),
-    );
+    if file_scan_failed {
+        log(
+            "warning",
+            &format!(
+                "Skipped {} sensitive path checks because the target could not be fetched.",
+                total_paths
+            ),
+        );
+    } else {
+        log(
+            "info",
+            &format!(
+                "Checked {} sensitive paths{} (max {PATH_CONCURRENCY} in parallel, {PATH_TIMEOUT:?} timeout).",
+                total_paths,
+                if deep { " (deep scan)" } else { "" }
+            ),
+        );
+    }
 
     let mut robots_body: Option<String> = None;
     let mut sitemap_body: Option<String> = None;
@@ -981,11 +1209,17 @@ where
                     let client = client.clone();
                     let target_url = format!("{origin}{path}");
                     async move {
-                        let result = fetch_limited(&client, &target_url, 65_536).await;
+                        let result = fetch_limited_with_timeout(
+                            &client,
+                            &target_url,
+                            65_536,
+                            Some(PATH_TIMEOUT),
+                        )
+                        .await;
                         (path, source, result)
                     }
                 })
-                .buffer_unordered(8)
+                .buffer_unordered(PATH_CONCURRENCY)
                 .collect()
                 .await;
 
@@ -1048,8 +1282,9 @@ where
 
     // --- JavaScript files + Python secret engine -------------------------
     let mut js_files: Vec<serde_json::Value> = Vec::new();
-    match fetch_limited(&client, url.as_str(), 2_097_152).await {
-        Ok(page) => {
+    let page_status = page.as_ref().map(|fetched| fetched.status);
+    let mut engine_ok = true;
+    if let Some(page) = page.filter(|fetched| fetched.status == 200) {
             let html = String::from_utf8_lossy(&page.body).to_string();
             let page_host = url.host_str().unwrap_or("").to_lowercase();
             let (script_urls, inline_files) =
@@ -1170,22 +1405,37 @@ where
                     ),
                 );
             }
-        }
-        Err(error) => {
-            errors.push(format!("Could not fetch page for JavaScript analysis: {error}"));
-            log(
-                "warning",
-                &format!("Could not fetch page for JavaScript analysis: {error}"),
-            );
-        }
+    } else if let Some(status) = page_status {
+        js_scan_failed = true;
+        let message = format!(
+            "JavaScript scan: Failed - Incomplete, secrets not checked (homepage returned HTTP {status})."
+        );
+        errors.push(message.clone());
+        log("error", &message);
     }
 
     if !js_files.is_empty() {
-        let secret_findings =
+        let (secret_findings, ok) =
             run_python_secret_scan(options, &js_files, &mut errors, &log).await;
+        engine_ok = ok;
         findings.extend(secret_findings);
-    } else {
-        log("info", "No JavaScript files to scan for secrets.");
+        log(
+            "info",
+            &format!(
+                "JavaScript scan checked {} file(s){}.",
+                js_files.len(),
+                if deep { ", including source maps" } else { "" }
+            ),
+        );
+    } else if page_status == Some(200) && !js_scan_failed {
+        log("info", "No JavaScript files found to scan for secrets.");
+    }
+    if !engine_ok {
+        js_scan_failed = true;
+        log(
+            "error",
+            "JavaScript scan: Failed - Incomplete, secrets not checked.",
+        );
     }
 
     // --- Open database ports (no authentication attempted) ---------------
@@ -1202,7 +1452,7 @@ where
                 log(
                     "info",
                     &format!(
-                        "Checking {} {} port(s) (connect only, no login)...",
+                        "Checking {} {} port(s) (connect + service verification, no login)...",
                         port_list.len(),
                         if deep { "database and development" } else { "common database" }
                     ),
@@ -1212,37 +1462,57 @@ where
                     let host = host.clone();
                     let service = service.to_string();
                     tasks.push(async move {
-                        let open = match tokio::time::timeout(
-                            Duration::from_secs(3),
-                            TcpStream::connect((host.as_str(), port)),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => true,
-                            _ => false,
-                        };
-                        (port, service, open)
+                        let (state, method) = verify_port(&host, port).await;
+                        (port, service, state, method)
                     });
                 }
                 let results = futures::future::join_all(tasks).await;
-                let open_ports: Vec<String> = results
+                let verified_ports: Vec<String> = results
                     .iter()
-                    .filter(|(_, _, open)| *open)
-                    .map(|(port, service, _)| format!("{service}:{port}"))
+                    .filter(|(_, _, state, _)| *state == PortState::VerifiedOpen)
+                    .map(|(port, service, _, _)| format!("{service}:{port}"))
                     .collect();
+                let unverified_count = results
+                    .iter()
+                    .filter(|(_, _, state, _)| *state == PortState::Unverified)
+                    .count();
                 log(
                     "info",
                     &format!(
-                        "Port scan complete. Open: {}",
-                        if open_ports.is_empty() {
+                        "Port scan complete. Open (verified): {} · Unverified/filtered: {} · Closed: {}.",
+                        if verified_ports.is_empty() {
                             "none".to_string()
                         } else {
-                            open_ports.join(", ")
-                        }
+                            verified_ports.join(", ")
+                        },
+                        unverified_count,
+                        results
+                            .iter()
+                            .filter(|(_, _, state, _)| *state == PortState::Closed)
+                            .count()
                     ),
                 );
-                for (port, service, open) in results {
-                    findings.push(make_port_finding(&host, port, &service, open));
+                // Log the verification method for every port.
+                for (port, service, state, method) in &results {
+                    match state {
+                        PortState::VerifiedOpen => log(
+                            "warning",
+                            &format!("Port {port} ({service}): open — verified via {method}."),
+                        ),
+                        PortState::Unverified => log(
+                            "info",
+                            &format!(
+                                "Port {port} ({service}): TCP connect succeeded but no banner or probe reply — marked unverified/filtered."
+                            ),
+                        ),
+                        PortState::Closed => log(
+                            "info",
+                            &format!("Port {port} ({service}): closed — {method}."),
+                        ),
+                    }
+                }
+                for (port, service, state, method) in results {
+                    findings.push(make_port_finding(&host, port, &service, state, &method));
                 }
             }
             Err(error) => {
@@ -1273,6 +1543,35 @@ where
     let (score, score_breakdown) = compute_score(&findings, false);
     let duration_ms = started.elapsed().as_millis() as u64;
 
+    // Findings + score breakdown in the live log so UI, log and exports always
+    // show the same numbers.
+    let (mut critical_n, mut high_n, mut medium_n, mut low_n, mut info_n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for finding in &findings {
+        match finding.severity.as_str() {
+            "Critical" => critical_n += 1,
+            "High" => high_n += 1,
+            "Medium" => medium_n += 1,
+            "Low" => low_n += 1,
+            _ => info_n += 1,
+        }
+    }
+    log(
+        "info",
+        &format!(
+            "Findings: {} total — All = Critical {critical_n} + High {high_n} + Medium {medium_n} + Low {low_n} + Info {info_n}.",
+            findings.len()
+        ),
+    );
+    for item in &score_breakdown {
+        log("info", &format!("Score: {} = {} points.", item.label, item.points));
+    }
+    log(
+        "info",
+        &format!(
+            "Leak Score: {score}/100 (Critical ×25, High ×15, Medium ×5, Low ×2, Info ×0)."
+        ),
+    );
+
     let report = ScanReport {
         id: Uuid::new_v4().to_string(),
         target: origin.clone(),
@@ -1287,6 +1586,16 @@ where
         findings,
         file_checks: checks,
         errors,
+        js_scan_status: if js_scan_failed {
+            "failed".to_string()
+        } else {
+            "complete".to_string()
+        },
+        file_scan_status: if file_scan_failed {
+            "failed".to_string()
+        } else {
+            "complete".to_string()
+        },
     };
 
     log(

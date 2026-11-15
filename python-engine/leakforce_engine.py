@@ -38,7 +38,7 @@ from html.parser import HTMLParser
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 "
-    "LeakForce/1.0 (authorized lab testing)"
+    "LeakForce/1.1.1 (authorized lab testing)"
 )
 
 
@@ -613,7 +613,16 @@ def _http_open(opener, url, method="GET", data=None, timeout=15):
         raw = exc.read(1024 * 1024)
         return exc.code, exc.geturl() or url, dict(exc.headers), raw
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"HTTP request failed: {exc}") from exc
+        # One automatic retry for transient network failures (timeouts etc.).
+        try:
+            resp = opener.open(req, timeout=timeout)
+            raw = resp.read(1024 * 1024)
+            return resp.getcode(), resp.geturl(), dict(resp.headers), raw
+        except urllib.error.HTTPError as exc2:
+            raw = exc2.read(1024 * 1024)
+            return exc2.code, exc2.geturl() or url, dict(exc2.headers), raw
+        except Exception as exc2:  # noqa: BLE001
+            raise RuntimeError(f"HTTP request failed: {exc2} (retried once after {exc})") from exc2
 
 
 def _decode(raw):
@@ -784,6 +793,7 @@ def run_brute_controller(config_path):
         log(f"Fetching login page: {target}")
         status, final_url, headers, raw = _http_open(follow, target)
         html = _decode(raw)
+        log(f"Login page fetched: HTTP {status} ({len(html)} chars)")
         if status >= 400 and not html:
             raise RuntimeError(f"Login page returned HTTP {status}")
 
@@ -800,9 +810,12 @@ def run_brute_controller(config_path):
 
         form = detect_login_form(html, final_url)
         if not form:
+            log(
+                "This tool supports standard HTML login forms with a password field.",
+                "warning",
+            )
             raise RuntimeError(
-                "No HTML login form with a password field was found. "
-                "This tool supports standard HTML forms only."
+                "No login form found on this URL - please enter the full login page URL, e.g. /login.php"
             )
 
         emit(

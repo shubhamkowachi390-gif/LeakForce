@@ -73,6 +73,13 @@ pub struct ScanReport {
     pub findings: Vec<Finding>,
     pub file_checks: Vec<FileCheck>,
     pub errors: Vec<String>,
+    /// "complete" or "failed" — whether the JavaScript secret analysis ran.
+    #[serde(default)]
+    pub js_scan_status: String,
+    /// "complete" or "failed" — whether sensitive-file checks ran against a
+    /// reachable target.
+    #[serde(default)]
+    pub file_scan_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,72 +181,40 @@ pub struct SessionView {
     pub scan_running: bool,
 }
 
-/// Leak Score rules (single source of truth for UI, TXT, JSON and HTML):
-///   Critical secret +40, High secret +25,
-///   .env or .git exposed +20, backup/SQL exposed +15,
-///   successful lab login +30. Maximum 100.
+/// Leak Score rules (single source of truth for UI, live log, TXT, JSON and
+/// HTML): every finding scores by severity — Critical +25, High +15,
+/// Medium +5, Low +2, Info +0 — plus +30 for a successful lab login.
+/// The total is capped at 100. Because UI, live log and exports all call this
+/// one function, the counts and the score can never disagree.
 pub fn compute_score(findings: &[Finding], login_success: bool) -> (u32, Vec<ScoreItem>) {
-    let mut critical_secrets: u32 = 0;
-    let mut high_secrets: u32 = 0;
-    let mut env_or_git = false;
-    let mut backup_or_sql = false;
+    let weights: [(&str, u32); 4] = [("Critical", 25), ("High", 15), ("Medium", 5), ("Low", 2)];
 
-    for finding in findings {
-        match finding.module.as_str() {
-            "secret" => match finding.severity.as_str() {
-                "Critical" => critical_secrets += 1,
-                "High" => high_secrets += 1,
-                _ => {}
-            },
-            "sensitive" if finding.kind == "file" && finding.status == Some(200) => {
-                let title = finding.title.to_lowercase();
-                if title.contains(".env") || title.contains(".git") {
-                    env_or_git = true;
-                } else if title.contains("backup")
-                    || title.contains(".sql")
-                    || title.contains("db.sql")
-                {
-                    backup_or_sql = true;
-                }
-            }
-            _ => {}
+    let mut items = Vec::new();
+    let mut total = 0u32;
+    for (severity, weight) in weights {
+        let count = findings
+            .iter()
+            .filter(|finding| finding.severity == severity)
+            .count() as u32;
+        if count > 0 {
+            let points = count * weight;
+            total += points;
+            items.push(ScoreItem {
+                label: format!("{severity} findings (×{count})"),
+                points,
+            });
         }
     }
 
-    let mut items = Vec::new();
-    if critical_secrets > 0 {
-        items.push(ScoreItem {
-            label: format!("Critical secrets (×{critical_secrets})"),
-            points: critical_secrets * 40,
-        });
-    }
-    if high_secrets > 0 {
-        items.push(ScoreItem {
-            label: format!("High secrets (×{high_secrets})"),
-            points: high_secrets * 25,
-        });
-    }
-    if env_or_git {
-        items.push(ScoreItem {
-            label: ".env or .git exposed".to_string(),
-            points: 20,
-        });
-    }
-    if backup_or_sql {
-        items.push(ScoreItem {
-            label: "Backup or SQL file exposed".to_string(),
-            points: 15,
-        });
-    }
     if login_success {
+        total += 30;
         items.push(ScoreItem {
             label: "Login success in lab".to_string(),
             points: 30,
         });
     }
 
-    let total = items.iter().map(|item| item.points).sum::<u32>().min(100);
-    (total, items)
+    (total.min(100), items)
 }
 
 pub fn same_host(a: &str, b: &str) -> bool {
@@ -299,15 +274,15 @@ mod tests {
     #[test]
     fn score_rule_is_exact() {
         let findings = vec![
-            finding("secret", "secret", "Critical", "AWS Access Key", None),
-            finding("secret", "secret", "High", "Google API Key", None),
             finding("sensitive", "file", "Critical", "Exposed file: .env", Some(200)),
-            finding("sensitive", "file", "Critical", "Exposed file: .git/config", Some(200)),
-            finding("sensitive", "file", "Critical", "Exposed file: backup.sql", Some(200)),
+            finding("sensitive", "file", "High", "Exposed file: config.php", Some(200)),
+            finding("sensitive", "file", "Medium", "Exposed directory: /admin/", Some(200)),
+            finding("sensitive", "file", "Low", "Exposed file: package.json", Some(200)),
+            finding("port", "port", "Info", "Port 3306 (MySQL) closed", None),
         ];
         let (score, items) = compute_score(&findings, false);
-        // 40 + 25 + 20 + 15 = 100
-        assert_eq!(score, 100);
+        // 25 + 15 + 5 + 2 + 0 (Info) = 47
+        assert_eq!(score, 47);
         assert_eq!(items.len(), 4);
 
         let (score, _) = compute_score(&[], true);
@@ -320,7 +295,9 @@ mod tests {
             finding("secret", "secret", "Critical", "AWS key 1", None),
             finding("secret", "secret", "Critical", "AWS key 2", None),
             finding("secret", "secret", "Critical", "AWS key 3", None),
+            finding("secret", "secret", "Critical", "AWS key 4", None),
         ];
+        // 4 × 25 + 30 (login) = 130 -> capped at 100
         let (score, _) = compute_score(&findings, true);
         assert_eq!(score, 100);
     }
@@ -341,6 +318,8 @@ mod tests {
             findings: vec![],
             file_checks: vec![],
             errors: vec![],
+            js_scan_status: "complete".into(),
+            file_scan_status: "complete".into(),
         };
         let matching = BruteSummary {
             id: "b".into(),

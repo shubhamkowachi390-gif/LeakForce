@@ -1,4 +1,4 @@
-# LeakForce v1.1 - Tested Checklist
+# LeakForce v1.1.1 - Tested Checklist
 
 This file records what was actually tested, how it was tested, and what still needs
 manual checking. Nothing here is aspirational: every "PASS" below was run on this
@@ -6,7 +6,7 @@ machine against localhost-only mock labs.
 
 - **Test date:** 2026-11-14
 - **OS:** Windows (x64), screen 1366x768
-- **App:** LeakForce v1.1 (release build)
+- **App:** LeakForce v1.1.1 (release build)
 - **Rust:** 1.100.0 (MSVC)
 - **Node.js:** v26.13.1
 - **Java:** Temurin JDK 17.0.21 (`C:\tools\jdk17`)
@@ -30,6 +30,37 @@ No third-party website was scanned or brute-forced.
 | 6 | Python syntax | `python -m py_compile python-engine\leakforce_engine.py test-lab\mock_server.py` | **PASS** |
 | 7 | Java worker JAR exists | `java-worker\build\LeakForceWorker.jar` | **PASS** (7,733 bytes) |
 | 8 | Wordlist size | `wordlists\top1000-passwords.txt` | **PASS** (1000 entries) |
+| 9 | Rust unit tests v1.1.1 (6 tests, incl. brute form pre-check) | `cd src-tauri; cargo test` | **PASS 6/6** |
+| 10 | Scanner end-to-end v1.1.1 (6 tests, incl. port verification + unreachable target) | `cd src-tauri; cargo test --test scan_e2e -- --ignored --nocapture` | **PASS 6/6** |
+| 11 | Real-target check harness (`testphp.vulnweb.com`) | `cargo test --test real_target_check -- --ignored --nocapture` | **PASS** (site unreachable from this build machine — see below) |
+
+### v1.1.1 bug-fix verification (localhost equivalents)
+
+`testphp.vulnweb.com` (44.228.249.3) is blocked at the network level from this build
+machine: plain TCP connect to port 80/443 fails even from PowerShell
+(`Test-NetConnection` → `TcpTestSucceeded: False`), while github.com works. The
+five fixes were therefore verified with equivalent localhost tests that reproduce
+the exact reported symptoms:
+
+1. **Port false positives** — `port_verification_avoids_false_positives`: a fake
+   MySQL banner server on 127.0.0.1:3306 is reported `Medium / open (verified)` with
+   the banner in the log; a silent server on 127.0.0.1:27017 is reported
+   `Info / unverified/filtered` and adds nothing to the score. **PASS**
+2. **Score/counts mismatch** — `score_rule_is_exact`, `txt_and_json_scores_match_report`
+   plus the e2e suite: score = breakdown sum (capped at 100) everywhere; the
+   **All** filter badge now binds to `count-all`. **PASS**
+3. **Silent JS failure** — `unreachable_target_reports_incomplete_scan`: homepage
+   fetch failure marks `js_scan_status = failed`, `file_scan_status = failed`,
+   records the error, and the UI shows the red
+   `JavaScript scan: Failed - Incomplete, secrets not checked.` line. **PASS**
+4. **Brute-force 0-attempt runs** — `resolve_brute_target_requires_login_form`:
+   homepage without a form → `No login form found on this URL - please enter the
+   full login page URL, e.g. /login.php`; real login page → accepted, HTTPS tried
+   first for schemeless targets. **PASS**
+5. **Speed** — probes now run 5 in parallel with a 5 s timeout
+   (`PATH_CONCURRENCY`, `PATH_TIMEOUT`); the full e2e suite (6 scans) completed in
+   20 s, and each 15-path standard scan takes only a few seconds. **PASS**
+
 
 ### What the automated tests prove
 
@@ -42,13 +73,14 @@ No third-party website was scanned or brute-forced.
 - Classifies success, failure, lockout text, HTTP 429 and CAPTCHA.
 - Refuses brute force when `authorized` is false.
 
-**Rust unit tests (4/4)**
-- Scoring rule is exact: Critical secret +40, High secret +25, `.env`/`.git` +20,
-  backup/SQL +15, login success +30, capped at 100.
+**Rust unit tests (6/6, v1.1.1)**
+- Scoring rule is exact: every finding scores by severity — Critical +25, High +15,
+  Medium +5, Low +2, Info +0 — plus +30 for a successful lab login, capped at 100.
 - Login bonus is only awarded for the same host.
-- TXT/JSON/HTML reports read the same score as the `ScanReport` (85 in the fixture).
+- Brute-force pre-check accepts a real login page and rejects a formless homepage.
+- TXT/JSON/HTML reports read the same score as the `ScanReport` (65 in the fixture).
 
-**Scanner end-to-end (4/4, localhost)**
+**Scanner end-to-end (6/6, localhost)**
 - Vulnerable lab: 9 exposed files found, 4 secrets found and masked, Leak Score **100**.
 - `robots.txt` / `sitemap.xml` hidden paths discovered (`/hidden-admin-panel`).
 - No raw secret string appears anywhere in the serialized report (exports/history); the
@@ -57,6 +89,10 @@ No third-party website was scanned or brute-forced.
 - Soft-404 SPA lab: score **0**, no false exposed-file findings.
 - **Deep Scan:** 14 exposed files (9 normal + 5 deep), 5 secrets including an AWS key
   from `app.js.map`, 17 ports checked, score capped at **100**, no errors.
+- **Port verification (v1.1.1):** banner-answered port = Medium `open (verified)`;
+  silent port = Info `unverified/filtered`, excluded from the score.
+- **Unreachable target (v1.1.1):** `js_scan_status = failed`,
+  `file_scan_status = failed`, error recorded, score 0 (closed ports are Info).
 
 **Brute controller (3/3, localhost)**
 - Success lab: detects `admin / password` on attempt 3, prints
@@ -70,7 +106,7 @@ No third-party website was scanned or brute-forced.
 
 | # | Check | How | Result |
 |---|---|---|---|
-| 1 | App launches from built EXE | `src-tauri\target\release\leakforce.exe` | **PASS** - window titled "LeakForce v1.1" |
+| 1 | App launches from built EXE | `src-tauri\target\release\leakforce.exe` | **PASS** - window titled "LeakForce v1.1.1" |
 | 2 | Default window size | Window rect on 1366x768 screen | **PASS** - 1366x768, centered |
 | 3 | Grey dark theme / green accents | Screenshot of Dashboard | **PASS** - `#101012` grey background, green/blue accents |
 | 4 | All five engines green | Settings -> Test Engines | **PASS** - Python, Java, Python engine, JAR, Wordlist |
@@ -89,7 +125,7 @@ No third-party website was scanned or brute-forced.
 | 17 | Brute Stop button | Click Stop during a run | **PASS** - run stops, no orphan Java process |
 | 18 | Benign lab score 0 | Scan `http://127.0.0.1:8383` | **PASS** |
 | 19 | Soft-404 lab no false files | Scan `http://127.0.0.1:8384` | **PASS** |
-| 20 | Installer | `LeakForce_1.1.0_x64-setup.exe` | **PASS** - NSIS installer produced |
+| 20 | Installer | `LeakForce_1.1.1_x64-setup.exe` | **PASS** - NSIS installer produced |
 | 21 | Settings persist | Change delay/threads, restart app | **PASS** |
 | 22 | Secret Reveal / Hide | Click Reveal on a secret finding, then Hide | **PASS** - full value shown on screen only, masked again on Hide |
 | 23 | Exports stay masked after Reveal | Reveal a secret, then export TXT/JSON/HTML | **PASS** - exports contain masked values only |

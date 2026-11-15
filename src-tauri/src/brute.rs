@@ -18,21 +18,68 @@ fn normalize_brute_target(input: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("Enter a lab target URL.".to_string());
     }
-    let with_scheme = if trimmed.to_lowercase().starts_with("http://")
+    if trimmed.contains(char::is_whitespace) {
+        return Err("The target contains spaces. Enter a single URL.".to_string());
+    }
+    let for_validation = if trimmed.to_lowercase().starts_with("http://")
         || trimmed.to_lowercase().starts_with("https://")
     {
         trimmed.to_string()
     } else {
-        format!("http://{trimmed}")
+        // Validation only; the real scheme is resolved by the pre-check below.
+        format!("https://{trimmed}")
     };
-    let url = Url::parse(&with_scheme).map_err(|error| format!("Invalid target URL: {error}"))?;
+    let url = Url::parse(&for_validation).map_err(|error| format!("Invalid target URL: {error}"))?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err("Only http:// and https:// targets are supported.".to_string());
     }
     if url.host_str().unwrap_or("").is_empty() {
         return Err("The target URL does not contain a valid host.".to_string());
     }
-    Ok(with_scheme)
+    Ok(trimmed.to_string())
+}
+
+/// Resolve the working brute-force target BEFORE any wordlist attempt starts:
+/// HTTPS first (then HTTP when no scheme was given), 15-second timeout through
+/// the shared client, and a real login-form check. Without a username/password
+/// form the run stops here with a clear error instead of a 0-attempt run.
+async fn resolve_brute_target(target: &str) -> Result<String, String> {
+    let client = crate::scanner::build_shared_client()?;
+    let candidates: Vec<String> =
+        if target.to_lowercase().starts_with("http://") || target.to_lowercase().starts_with("https://") {
+            vec![target.to_string()]
+        } else {
+            vec![format!("https://{target}"), format!("http://{target}")]
+        };
+
+    let mut last_error = String::new();
+    for candidate in candidates {
+        let response = match client.get(&candidate).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = format!("{candidate} — {error}");
+                continue;
+            }
+        };
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        if status >= 400 {
+            last_error = format!("{candidate} — HTTP {status}");
+            continue;
+        }
+
+        if page_has_login_form(&body) {
+            return Ok(candidate);
+        }
+        return Err(
+            "No login form found on this URL - please enter the full login page URL, e.g. /login.php"
+                .to_string(),
+        );
+    }
+
+    Err(format!(
+        "Could not reach the target ({last_error}). Check the URL and try again."
+    ))
 }
 
 pub async fn run(
@@ -61,7 +108,10 @@ async fn run_inner(
     state: &AppState,
     config: BruteConfig,
 ) -> Result<BruteSummary, String> {
-    let target = normalize_brute_target(&config.target)?;
+    let requested = normalize_brute_target(&config.target)?;
+    // Bug #4 fix: fetch the login page first, require a real login form, and
+    // never start the wordlist against a homepage without one.
+    let target = resolve_brute_target(&requested).await?;
     let delay_ms = config.delay_ms.clamp(250, 10_000);
     let concurrency = config.concurrency.clamp(1, 5);
     let settings = state
@@ -402,6 +452,15 @@ async fn run_inner(
     Ok(summary)
 }
 
+/// True when the page contains an HTML password input, i.e. a login form.
+fn page_has_login_form(html: &str) -> bool {
+    let document = scraper::Html::parse_document(html);
+    scraper::Selector::parse("input[type='password']")
+        .ok()
+        .map(|selector| document.select(&selector).next().is_some())
+        .unwrap_or(false)
+}
+
 pub fn stop(state: &AppState) -> Result<(), String> {
     state.brute_stop_requested.store(true, Ordering::SeqCst);
     let pid = state
@@ -434,4 +493,78 @@ pub fn stop(state: &AppState) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_form_detection() {
+        assert!(page_has_login_form(
+            r#"<html><form action="/login.php" method="post"><input name="user"><input type="password" name="pass"><input type="submit"></form></html>"#
+        ));
+        assert!(!page_has_login_form("<html><body>Welcome to the homepage</body></html>"));
+        assert!(!page_has_login_form(""));
+    }
+
+    /// Bug #4 pass criterion: on a homepage without a login form the tool must
+    /// stop with a clear error instead of starting a 0-attempt run; on a real
+    /// login page it must be accepted.
+    #[tokio::test]
+    async fn resolve_brute_target_requires_login_form() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18410")
+            .await
+            .expect("bind 127.0.0.1:18410");
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            loop {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        sock.read(&mut buf),
+                    )
+                    .await;
+                    let request = String::from_utf8_lossy(&buf);
+                    let body = if request.contains("login.php") {
+                        "<html><body><form method=\"post\" action=\"/login.php\"><input name=\"uname\"><input type=\"password\" name=\"psw\"><input type=\"submit\" value=\"Login\"></form></body></html>".to_string()
+                    } else {
+                        "<html><body>home page, no form here</body></html>".to_string()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(response.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                }
+            }
+        });
+
+        // Homepage without a login form -> clear error, no attempts started.
+        let homepage = format!("http://127.0.0.1:{port}/");
+        let error = resolve_brute_target(&homepage)
+            .await
+            .expect_err("homepage without a form must be rejected");
+        assert!(
+            error.contains("No login form found on this URL"),
+            "wrong error message: {error}"
+        );
+
+        // Real login page -> accepted.
+        let login = format!("http://127.0.0.1:{port}/login.php");
+        let resolved = resolve_brute_target(&login)
+            .await
+            .expect("login page must be accepted");
+        assert!(
+            resolved.ends_with("/login.php"),
+            "wrong resolved URL: {resolved}"
+        );
+
+        server.abort();
+    }
 }

@@ -397,7 +397,7 @@
       if (counts[finding.severity] !== undefined) counts[finding.severity] += 1;
     });
     Object.entries(counts).forEach(([key, value]) => {
-      const node = document.getElementById(`count-${key}`);
+      const node = document.getElementById(key === "All" ? "count-all" : `count-${key}`);
       if (node) node.textContent = String(value);
     });
     $$("#severity-filters [data-filter]").forEach((button) => {
@@ -643,6 +643,18 @@
       $("#scan-status").textContent = `${deep ? "Deep scan" : "Scan"} complete — ${fmtDuration(report.durationMs)} · score ${report.score}/100`;
       $("#scan-status").className = "text-xs text-emerald-300";
       addLog("success", `${deep ? "Deep scan" : "Scan"} complete: ${report.score}/100 · ${report.findings.length} finding(s).`);
+      // Incomplete-module warnings (bug #3): never pass off a failed JS/file
+      // scan as a clean "0 secrets / 0 files" result.
+      if (report.jsScanStatus === "failed") {
+        addLog("error", "JavaScript scan: Failed - Incomplete, secrets not checked.");
+        $("#scan-status").textContent += " · JavaScript scan incomplete";
+        $("#scan-status").className = "text-xs text-red-300";
+      }
+      if (report.fileScanStatus === "failed") {
+        addLog("error", "Sensitive file scan: Failed - Incomplete, target could not be fetched.");
+        $("#scan-status").textContent += " · File scan incomplete";
+        $("#scan-status").className = "text-xs text-red-300";
+      }
       toast(`${deep ? "Deep scan" : "Scan"} complete — Leak Score ${report.score}/100`, "success");
       refreshHistory();
     } catch (error) {
@@ -1196,7 +1208,7 @@
   async function init() {
     bindEvents();
     await bindBackendEvents();
-    addLog("info", "LeakForce v1.1 ready. Authorized lab use only.");
+    addLog("info", "LeakForce v1.1.1 ready. Authorized lab use only.");
 
     const savedTarget = localStorage.getItem("leakforce.lastTarget");
     if (savedTarget) $("#scan-target").value = savedTarget;

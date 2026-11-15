@@ -1,4 +1,4 @@
-# 🕵️ LeakForce v1.1
+# 🕵️ LeakForce v1.1.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -7,6 +7,27 @@
 LeakForce checks a website for common exposed files, hard-coded secrets in JavaScript,
 open database ports, and (only with your confirmation) weak login passwords on lab sites.
 Everything runs locally on your PC. Nothing is uploaded anywhere. 🔒
+
+### 🆕 v1.1.1 bug-fixes (based on real testing feedback)
+
+1. 🛰️ **Port false positives fixed** — a port is called **open** only when the service
+   answers with a banner or a protocol-specific probe (Redis PING, Memcached version,
+   PostgreSQL SSLRequest, HTTP HEAD). Connect-only results are now
+   **Unverified / Filtered (Info)** and do not count toward the score. The verification
+   method is logged for every port.
+2. 🧮 **One scoring function** — UI, live log and exports all share the same score:
+   Critical ×25, High ×15, Medium ×5, Low ×2, Info ×0, login success +30, cap 100.
+   The log prints the full breakdown, and the **All** filter count now displays correctly.
+3. 🌐 **One shared HTTP client** — real browser User-Agent, 5 redirects, 15 s timeout,
+   1 automatic retry, real HTTP status codes. If the homepage cannot be fetched, the
+   JavaScript and sensitive-file modules are marked **Failed - Incomplete** in red
+   instead of silently reporting "0 secrets / 0 files".
+4. 🔐 **Login test pre-check** — HTTPS first, then HTTP; the tool fetches the URL and
+   requires a real username/password form **before** the wordlist starts. A homepage
+   without a login form stops with
+   `No login form found on this URL - please enter the full login page URL, e.g. /login.php`.
+5. ⚡ **Speed** — sensitive paths are checked 5 in parallel with a 5 s per-request
+   timeout (71 paths now finish in seconds, not minutes).
 
 > [!WARNING]
 > 🎓 **Educational purposes only.** LeakForce is built for learning and for testing **your own lab targets** or systems you have **written permission** to test. Scanning or trying passwords on websites without permission is illegal. 🚫
@@ -47,7 +68,7 @@ all read that same value, so they can never disagree.
 ### 📦 Option A - Use the built app (recommended)
 
 1. Install the app with the installer:
-   `src-tauri\target\release\bundle\nsis\LeakForce_1.1.0_x64-setup.exe`
+   `src-tauri\target\release\bundle\nsis\LeakForce_1.1.1_x64-setup.exe`
 2. Install the two helpers LeakForce needs (one time):
    - **Python 3.9 or newer** - <https://www.python.org/downloads/windows/>
      During setup, tick **"Add python.exe to PATH"**.
@@ -79,7 +100,7 @@ builds the Java worker JAR, creates icons if missing, and runs `tauri build`.
 Expected outputs:
 
 - App: `src-tauri\target\release\leakforce.exe`
-- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.1.0_x64-setup.exe`
+- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.1.1_x64-setup.exe`
 
 For development with hot reload:
 
@@ -236,7 +257,7 @@ LeakForce is released under the **MIT License**. You are free to use, modify, an
 
 ---
 
-**LeakForce v1.1** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
+**LeakForce v1.1.1** 🎓 - built for learning. Hack your own lab, not other people's websites. ❤️
 
 **Developer:** ctf_shubh · **GitHub:** [shubhamkowachi390-gif](https://github.com/shubhamkowachi390-gif) · **License:** MIT 📄
 

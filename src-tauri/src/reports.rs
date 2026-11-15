@@ -376,6 +376,8 @@ mod tests {
             ],
             file_checks: vec![],
             errors: vec![],
+            js_scan_status: "complete".into(),
+            file_scan_status: "complete".into(),
         };
         let (score, breakdown) = crate::models::compute_score(&report.findings, false);
         report.score = score;
@@ -387,23 +389,24 @@ mod tests {
     fn txt_and_json_scores_match_report() {
         let report = sample_report();
         let txt = render_txt(&report, None);
-        assert!(txt.contains("Leak Score     : 85/100"), "{txt}");
+        // 1 Critical + 1 High secret + 1 Critical file = 25 + 15 + 25 = 65
+        assert!(txt.contains("Leak Score     : 65/100"), "{txt}");
         assert!(txt.contains("[CRITICAL] Exposed file: .env"));
         assert!(txt.contains("[CRITICAL] AWS Access Key"));
         assert!(txt.contains("[HIGH] Google API Key"));
-        assert!(txt.contains("Critical secrets (×1)"));
-        assert!(txt.contains("High secrets (×1)"));
+        assert!(txt.contains("Critical findings (×2)"));
+        assert!(txt.contains("High findings (×1)"));
 
         let json: serde_json::Value =
             serde_json::from_str(&render_json(&report, None)).expect("valid json");
-        assert_eq!(json["report"]["score"], 85);
+        assert_eq!(json["report"]["score"], 65);
         assert_eq!(
             json["report"]["findings"].as_array().unwrap().len(),
             report.findings.len()
         );
 
         let html = render_html(&report, None);
-        assert!(html.contains(">85<"));
+        assert!(html.contains(">65<"));
         assert!(html.contains("Exposed file: .env"));
     }
 }
