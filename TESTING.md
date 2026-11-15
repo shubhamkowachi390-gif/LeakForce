@@ -1,4 +1,4 @@
-# LeakForce v1.2.0 - Tested Checklist
+# LeakForce v1.2.1 - Tested Checklist
 
 This file records what was actually tested, how it was tested, and what still needs
 manual checking. Nothing here is aspirational: every "PASS" below was run on this
@@ -6,7 +6,7 @@ machine against localhost-only mock labs.
 
 - **Test date:** 2026-11-15
 - **OS:** Windows (x64), screen 1366x768
-- **App:** LeakForce v1.2.0 (release build)
+- **App:** LeakForce v1.2.1 (release build)
 - **Rust:** 1.100.0 (MSVC)
 - **Node.js:** v26.13.1
 - **Java:** Temurin JDK 17.0.21 (`C:\tools\jdk17`)

@@ -715,6 +715,19 @@
       const report = await invoke("run_sensitive_scan", { target, deepScan: deep });
       state.session = await invoke("get_session");
       renderSession();
+      // A failed homepage means the scan never ran: show INCOMPLETE, never a
+      // clean "0/100" that looks like a pass.
+      if (report.homepageOk === false) {
+        $("#scan-status").textContent = `${deep ? "Deep scan" : "Scan"} INCOMPLETE — homepage fetch failed, nothing was checked`;
+        $("#scan-status").className = "text-xs text-red-300";
+        addLog(
+          "error",
+          `${deep ? "Deep scan" : "Scan"} finished INCOMPLETE in ${fmtDuration(report.durationMs)} — homepage fetch failed. 0 files / 0 secrets does NOT mean clean. Reason: ${report.homepageError || "unknown"}.`,
+        );
+        toast("Scan incomplete — homepage fetch failed. See the red banner and log.", "error");
+        refreshHistory();
+        return;
+      }
       $("#scan-status").textContent = `${deep ? "Deep scan" : "Scan"} complete — ${fmtDuration(report.durationMs)} · score ${report.score}/100`;
       $("#scan-status").className = "text-xs text-emerald-300";
       addLog("success", `${deep ? "Deep scan" : "Scan"} complete: ${report.score}/100 · ${report.findings.length} finding(s).`);
@@ -1441,7 +1454,7 @@
   async function init() {
     bindEvents();
     await bindBackendEvents();
-    addLog("info", "LeakForce v1.2.0 ready. Authorized lab use only.");
+    addLog("info", "LeakForce v1.2.1 ready. Authorized lab use only.");
 
     const savedTarget = localStorage.getItem("leakforce.lastTarget");
     if (savedTarget) $("#scan-target").value = savedTarget;

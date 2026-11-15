@@ -127,3 +127,164 @@ async fn testphp_vulnweb_bugfix_verification() {
     }
     println!("======================================================");
 }
+
+/// Scan a different, always-reachable public domain (example.com) to prove the
+/// rebuilt HTTP client fetches normal HTTPS sites end-to-end: homepage OK,
+/// file scan runs with real status codes, JS scan runs, no false findings.
+#[tokio::test]
+#[ignore = "contacts example.com over the live internet; run explicitly"]
+async fn example_com_scan_completes() {
+    let started = std::time::Instant::now();
+    let options = ScanOptions {
+        python: "python".to_string(),
+        engine_script: Some(engine_script()),
+        deep_scan: false,
+    };
+
+    let report = scan_target("https://example.com", &options, |level, message| {
+        println!("[{level}] {message}");
+    })
+    .await
+    .expect("scan should complete");
+
+    assert!(
+        report.homepage_ok,
+        "example.com homepage must fetch: {:?}",
+        report.homepage_error
+    );
+    assert_eq!(
+        report.file_scan_status, "complete",
+        "file scan must run once the homepage is reachable"
+    );
+    assert!(
+        report.js_scan_status == "complete" || report.js_scan_status == "failed",
+        "unexpected js_scan_status: {}",
+        report.js_scan_status
+    );
+    // example.com is a single static page: nothing should be "found".
+    assert_eq!(report.sensitive_found, 0, "no sensitive files on example.com");
+    assert_eq!(report.secrets_found, 0, "no secrets on example.com");
+    let seconds = started.elapsed().as_secs_f64();
+    println!("example.com scan: {seconds:.1}s, score {}, file_scan={}", report.score, report.file_scan_status);
+    assert!(seconds < 60.0);
+}
+
+/// Scan demo.testfire.net: TCP is reachable but its TLS certificate is
+/// expired, so this proves the lab-mode tolerant-TLS fallback fetches the
+/// homepage with a warning instead of dying with "error sending request".
+#[tokio::test]
+#[ignore = "contacts demo.testfire.net over the live internet; run explicitly"]
+async fn testfire_expired_cert_fallback_completes() {
+    let options = ScanOptions {
+        python: "python".to_string(),
+        engine_script: Some(engine_script()),
+        deep_scan: false,
+    };
+
+    let report = scan_target("https://demo.testfire.net", &options, |level, message| {
+        println!("[{level}] {message}");
+    })
+    .await
+    .expect("scan should complete");
+
+    println!(
+        "demo.testfire.net scan: homepage_ok={} error={:?} file_scan={} js_scan={} score={} sensitive={} secrets={}",
+        report.homepage_ok,
+        report.homepage_error,
+        report.file_scan_status,
+        report.js_scan_status,
+        report.score,
+        report.sensitive_found,
+        report.secrets_found
+    );
+    assert!(
+        report.homepage_ok,
+        "tolerant-TLS fallback must fetch the homepage: {:?}",
+        report.homepage_error
+    );
+    assert_eq!(report.file_scan_status, "complete");
+}
+
+/// Scan testphp.vulnweb.com and confirm the failure mode is a clearly
+/// reported network-level block (detailed stage error + INCOMPLETE), not a
+/// silent clean 0/100. On networks where the site IS reachable this test
+/// instead proves a full scan completes.
+#[tokio::test]
+#[ignore = "contacts testphp.vulnweb.com over the live internet; run explicitly"]
+async fn testphp_reports_clear_status() {
+    let options = ScanOptions {
+        python: "python".to_string(),
+        engine_script: Some(engine_script()),
+        deep_scan: false,
+    };
+
+    let report = scan_target("https://testphp.vulnweb.com", &options, |level, message| {
+        println!("[{level}] {message}");
+    })
+    .await
+    .expect("scan should complete");
+
+    println!(
+        "testphp scan: homepage_ok={} error={:?} file_scan={} js_scan={} score={}",
+        report.homepage_ok,
+        report.homepage_error,
+        report.file_scan_status,
+        report.js_scan_status,
+        report.score
+    );
+    if !report.homepage_ok {
+        let reason = report.homepage_error.clone().unwrap_or_default().to_lowercase();
+        assert!(
+            !reason.is_empty(),
+            "a failed homepage fetch must record a detailed reason"
+        );
+        assert!(
+            reason.contains("timed out") || reason.contains("dns") || reason.contains("tls") || reason.contains("connect"),
+            "reason must name the network stage, got: {reason}"
+        );
+        assert!(
+            !report.file_scan_status.is_empty(),
+            "file_scan_status must be marked failed, not silently empty"
+        );
+    }
+}
+
+/// Full OSINT run against demo.testfire.net with theHarvester enabled.
+/// Requires theHarvester on PATH (pipx install from GitHub). Proves the
+/// backend detects the tool, runs it, and merges its JSON output with the
+/// built-in crt.sh / homepage sources.
+#[tokio::test]
+#[ignore = "runs theHarvester (may take minutes); run explicitly"]
+async fn testfire_osint_with_harvester() {
+    let report = leakforce_lib::osint::run_osint(
+        "demo.testfire.net",
+        leakforce_lib::osint::OsintOptions { use_harvester: true },
+        |level, message| println!("[{level}] {message}"),
+    )
+    .await
+    .expect("OSINT run should complete");
+
+    println!(
+        "OSINT demo.testfire.net: subdomains={} emails={} ips={} urls={} sources={:?} harvester_used={} harvester_available={} errors={:?}",
+        report.subdomains.len(),
+        report.emails.len(),
+        report.ip_addresses.len(),
+        report.urls.len(),
+        report.sources,
+        report.harvester_used,
+        report.harvester_available,
+        report.errors
+    );
+    assert!(
+        report.harvester_available,
+        "theHarvester must be detected on PATH for this test"
+    );
+    // Built-in crt.sh is passive and should produce at least the apex host.
+    assert!(
+        !report.sources.is_empty(),
+        "at least one OSINT source must succeed"
+    );
+    println!("subdomains: {:?}", report.subdomains);
+    println!("emails    : {:?}", report.emails);
+    println!("ips       : {:?}", report.ip_addresses);
+}

@@ -1,4 +1,4 @@
-# 🕵️ LeakForce v1.2.0
+# 🕵️ LeakForce v1.2.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -14,7 +14,9 @@ your PC. Nothing is uploaded anywhere. 🔒
 1. 🔍 **OSINT section (new sidebar page)** — passive public-data research for one domain:
    **crt.sh** certificate-transparency subdomains, the site's own homepage (e-mail
    addresses, page title), and optionally a locally installed **theHarvester**
-   (`pip install theHarvester`, detected automatically). Findings are shown in a
+   (`pipx install git+https://github.com/laramies/theHarvester.git`, detected
+   automatically — note: the PyPI package `theHarvester 0.0.1` is a typosquat,
+   install from GitHub only). Findings are shown in a
    Type / Value / Source table with Copy-all and TXT/JSON export. Findings are
    informational (severity Info, 0 score impact). Authorization checkbox is mandatory.
 2. 🌐 **HTTP engine rebuilt** — the single shared client now uses the **OS certificate
@@ -102,7 +104,7 @@ all read that same value, so they can never disagree.
 ### 📦 Option A - Use the built app (recommended)
 
 1. Install the app with the installer:
-   `src-tauri\target\release\bundle\nsis\LeakForce_1.2.0_x64-setup.exe`
+   `src-tauri\target\release\bundle\nsis\LeakForce_1.2.1_x64-setup.exe`
 2. Install the two helpers LeakForce needs (one time):
    - **Python 3.9 or newer** - <https://www.python.org/downloads/windows/>
      During setup, tick **"Add python.exe to PATH"**.
@@ -134,7 +136,7 @@ builds the Java worker JAR, creates icons if missing, and runs `tauri build`.
 Expected outputs:
 
 - App: `src-tauri\target\release\leakforce.exe`
-- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.2.0_x64-setup.exe`
+- Installer: `src-tauri\target\release\bundle\nsis\LeakForce_1.2.1_x64-setup.exe`
 
 For development with hot reload:
 

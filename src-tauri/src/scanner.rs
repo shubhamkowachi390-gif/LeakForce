@@ -181,7 +181,7 @@ struct PyFinding {
     raw: Option<String>,
 }
 
-fn normalize_target(input: &str) -> Result<Url, String> {
+fn normalize_target(input: &str) -> Result<(Url, bool), String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("Please enter a domain or URL.".to_string());
@@ -189,11 +189,13 @@ fn normalize_target(input: &str) -> Result<Url, String> {
     if trimmed.contains(char::is_whitespace) {
         return Err("The target contains spaces. Enter a single domain or URL.".to_string());
     }
-    let with_scheme = if trimmed.to_lowercase().starts_with("http://")
-        || trimmed.to_lowercase().starts_with("https://")
-    {
+    let lowered = trimmed.to_lowercase();
+    let explicit_scheme = lowered.starts_with("http://") || lowered.starts_with("https://");
+    let with_scheme = if explicit_scheme {
         trimmed.to_string()
     } else {
+        // No scheme typed: try https first, and the scan will fall back to
+        // http if https cannot connect.
         format!("https://{trimmed}")
     };
     let mut url = Url::parse(&with_scheme).map_err(|error| format!("Invalid URL: {error}"))?;
@@ -206,7 +208,7 @@ fn normalize_target(input: &str) -> Result<Url, String> {
     url.set_fragment(None);
     let _ = url.set_username("");
     let _ = url.set_password(None);
-    Ok(url)
+    Ok((url, explicit_scheme))
 }
 
 /// DNS resolver that prefers IPv4 (A records) and only falls back to IPv6.
@@ -1095,8 +1097,8 @@ where
 {
     let started = Instant::now();
     let started_at = crate::storage::now_rfc3339();
-    let url = normalize_target(target)?;
-    let origin = url.origin().ascii_serialization();
+    let (mut url, explicit_scheme) = normalize_target(target)?;
+    let mut origin = url.origin().ascii_serialization();
     let host = url.host_str().unwrap_or("").to_string();
     let deep = options.deep_scan;
 
@@ -1159,6 +1161,36 @@ where
             if homepage_result.is_ok() {
                 client = relaxed_client;
                 log("warning", "Continuing the whole scan with certificate validation relaxed for this target.");
+            }
+        }
+    }
+
+    // Schemeless target: if https:// could not be fetched at all, try
+    // http:// once before declaring the target unreachable.
+    if homepage_result.is_err() && !explicit_scheme && url.scheme() == "https" {
+        if let Err(first_error) = &homepage_result {
+            let http_url = format!("http://{host_for_log}/");
+            log(
+                "warning",
+                &format!("HTTPS fetch failed ({first_error}) — retrying with http:// (schemeless target)..."),
+            );
+            if let Ok(http_parsed) = Url::parse(&http_url) {
+                let retry = fetch_limited(&client, &http_url, 2_097_152).await;
+                match retry {
+                    Ok(fetched) => {
+                        log(
+                            "success",
+                            &format!("HTTP fallback worked — continuing the scan against {http_url}."),
+                        );
+                        url = http_parsed;
+                        origin = url.origin().ascii_serialization();
+                        log("info", &format!("Target origin updated to {origin}."));
+                        homepage_result = Ok(fetched);
+                    }
+                    Err(_) => {
+                        // keep the original https error for reporting
+                    }
+                }
             }
         }
     }

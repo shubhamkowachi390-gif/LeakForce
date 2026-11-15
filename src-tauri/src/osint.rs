@@ -10,8 +10,9 @@
 //! the user confirms is in scope.
 
 use crate::models::OsintReport;
-use crate::scanner::build_shared_client;
+use crate::scanner::{build_shared_client, build_shared_client_tolerant};
 use chrono::Utc;
+use reqwest::Client;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -19,7 +20,11 @@ use uuid::Uuid;
 /// Max bytes read from any single HTTP response.
 const MAX_BYTES: usize = 2_097_152;
 /// Timeout for the theHarvester child process (it queries many sources).
-const HARVESTER_TIMEOUT: Duration = Duration::from_secs(180);
+const HARVESTER_TIMEOUT: Duration = Duration::from_secs(300);
+/// Engines used by default. `-b all` pulls in every source (including ones
+/// that hang without API keys) and reliably exceeds a 3-minute budget; this
+/// curated passive set works without any API key and finishes in time.
+const HARVESTER_ENGINES: &str = "crtsh,otx,duckduckgo,bing,urlscan";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OsintOptions {
@@ -219,7 +224,7 @@ where
         .arg("-d")
         .arg(domain)
         .arg("-b")
-        .arg("all")
+        .arg(HARVESTER_ENGINES)
         .arg("-f")
         .arg(&json_path)
         .env("PYTHONIOENCODING", "utf-8")
@@ -245,7 +250,19 @@ where
     };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr.lines().next().unwrap_or("unknown error").trim();
+        let stdout_tail = String::from_utf8_lossy(&output.stdout);
+        let message = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .or_else(|| {
+                stdout_tail
+                    .lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+            })
+            .unwrap_or("unknown error");
         return Err(format!("theHarvester exited with an error: {message}"));
     }
 
@@ -260,6 +277,37 @@ where
 // Main entry point
 // ---------------------------------------------------------------------------
 
+/// Shared fetch helper for the built-in OSINT sources: on a TLS certificate
+/// failure (expired / invalid site certificate) it retries once with the
+/// tolerant client, exactly like the sensitive scan does in lab mode.
+async fn fetch_osint_url<F>(
+    client: &Client,
+    relaxed: &Client,
+    url: &str,
+    timeout: Duration,
+    log: &F,
+) -> Result<crate::scanner::Fetched, String>
+where
+    F: Fn(&str, &str) + Send + Sync,
+{
+    let first = crate::scanner::fetch_limited_with_timeout(client, url, MAX_BYTES, Some(timeout)).await;
+    match first {
+        Ok(fetched) => Ok(fetched),
+        Err(error) => {
+            let lowered = error.to_lowercase();
+            if lowered.contains("certificate") || lowered.contains("tls handshake failed") {
+                log(
+                    "warning",
+                    "TLS certificate problem — retrying WITHOUT certificate validation (lab mode).",
+                );
+                crate::scanner::fetch_limited_with_timeout(relaxed, url, MAX_BYTES, Some(timeout)).await
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Run the passive OSINT collection for one domain.
 pub async fn run_osint<F>(
     domain: &str,
@@ -273,6 +321,7 @@ where
     let started_at = crate::storage::now_rfc3339();
     let domain = normalize_domain(domain)?;
     let client = build_shared_client()?;
+    let relaxed_client = build_shared_client_tolerant()?;
 
     log("info", &format!("OSINT target: {domain} (passive public sources only)"));
 
@@ -289,7 +338,7 @@ where
     // --- Source 1: crt.sh certificate transparency ------------------------
     let crtsh_url = format!("https://crt.sh/?q=%25.{domain}&output=json");
     log("info", "Querying crt.sh certificate-transparency logs...");
-    match crate::scanner::fetch_limited_with_timeout(&client, &crtsh_url, MAX_BYTES, Some(Duration::from_secs(30))).await {
+    match fetch_osint_url(&client, &relaxed_client, &crtsh_url, Duration::from_secs(30), &log).await {
         Ok(fetched) if fetched.status == 200 => {
             let body = String::from_utf8_lossy(&fetched.body).to_string();
             let names = parse_crtsh(&body, &domain);
@@ -317,7 +366,7 @@ where
     // --- Source 2: the site's own homepage --------------------------------
     let homepage_url = format!("https://{domain}");
     log("info", &format!("Fetching the site's own homepage ({homepage_url})..."));
-    match crate::scanner::fetch_limited_with_timeout(&client, &homepage_url, MAX_BYTES, Some(Duration::from_secs(15))).await {
+    match fetch_osint_url(&client, &relaxed_client, &homepage_url, Duration::from_secs(15), &log).await {
         Ok(fetched) if fetched.status == 200 => {
             let html = String::from_utf8_lossy(&fetched.body).to_string();
             page_title_text = page_title(&html);
@@ -374,7 +423,7 @@ where
                 }
             }
         } else {
-            let message = "theHarvester was requested but not found on PATH. Install it with: pip install theHarvester".to_string();
+            let message = "theHarvester was requested but not found on PATH. Install the official tool with: pipx install git+https://github.com/laramies/theHarvester.git (do NOT use: pip install theHarvester — that PyPI package is a typosquat)".to_string();
             log("warning", &message);
             errors.push(message);
         }

@@ -1,6 +1,6 @@
 [package]
 name = "leakforce"
-version = "1.2.0"
+version = "1.2.1"
 description = "LeakForce - authorized lab security scanner"
 license = "MIT"
 authors = ["LeakForce"]

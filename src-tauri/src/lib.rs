@@ -1,6 +1,6 @@
 mod brute;
 mod engines;
-mod osint;
+pub mod osint;
 pub mod models;
 pub mod reports;
 pub mod scanner;
