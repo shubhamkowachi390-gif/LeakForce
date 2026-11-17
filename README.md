@@ -9,6 +9,34 @@ open database ports, and (only with your confirmation) weak login passwords on l
 It can also run passive OSINT research (public data only). Everything runs locally on
 your PC. Nothing is uploaded anywhere. 🔒
 
+## 📸 Screenshots
+
+**Dashboard** — leak score, scan overview, live log:
+
+![Dashboard](docs/screenshots/01-dashboard.png)
+
+**Sensitive Scan** — domain/URL input, Test Connection, deep scan toggle:
+
+![Sensitive Scan](docs/screenshots/02-sensitive-scan.png)
+
+**Deep scan results** — real run against `demo.testfire.net`: 18 findings, Leak Score 10/100,
+exposed `/admin/` directory, live per-stage log:
+
+![Scan results](docs/screenshots/06-scan-results.png)
+
+**Brute Force (lab only)** — permission checkbox, wordlist, delay and thread controls:
+
+![Brute Force](docs/screenshots/03-brute-force.png)
+
+**OSINT (passive)** — crt.sh + homepage + optional theHarvester, with optional
+private Shodan/Hunter API keys:
+
+![OSINT](docs/screenshots/04-osint.png)
+
+**Settings** — engine paths, defaults, component status:
+
+![Settings](docs/screenshots/05-settings.png)
+
 ### 🆕 v1.2.1 — private OSINT sources + brute TLS fallback
 
 6. 🔑 **Private / paid OSINT sources (optional)** — in the OSINT section, tick
