@@ -20,6 +20,7 @@ import os
 import random
 import re
 import shutil
+import ssl
 import string
 import subprocess
 import sys
@@ -438,6 +439,28 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _tolerant_ssl_context():
+    """SSL context that skips certificate validation (lab-mode fallback)."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _build_opener(cookie_jar, no_redirect=False, tolerant=False):
+    handlers = [urllib.request.HTTPCookieProcessor(cookie_jar)]
+    if no_redirect:
+        handlers.append(_NoRedirect())
+    if tolerant:
+        handlers.append(urllib.request.HTTPSHandler(context=_tolerant_ssl_context()))
+    return urllib.request.build_opener(*handlers)
+
+
+def _is_certificate_error(message):
+    lowered = str(message).lower()
+    return "certificate" in lowered or "ssl" in lowered
+
+
 class LoginFormParser(HTMLParser):
     """Find the first <form> that contains a password input."""
 
@@ -735,6 +758,7 @@ def _write_worker_files(tmpdir, fields, tasks, config, form, cookie_header, page
         "userAgent": USER_AGENT,
         "cookie": cookie_header,
         "referer": page_url,
+        "insecureTls": "true" if config.get("insecureTls") else "false",
         "tasksFile": tasks_path,
         "fieldsFile": fields_path,
         "total": str(len(tasks)),
@@ -784,13 +808,29 @@ def run_brute_controller(config_path):
             )
 
         jar = http.cookiejar.CookieJar()
-        follow = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-        no_redirect = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(jar), _NoRedirect()
-        )
+        follow = _build_opener(jar)
+        no_redirect = _build_opener(jar, no_redirect=True)
+        follow_relaxed = _build_opener(jar, tolerant=True)
+        no_redirect_relaxed = _build_opener(jar, no_redirect=True, tolerant=True)
+        insecure_tls = {"used": False}
+
+        def open_with_tls_fallback(opener, relaxed, url, method="GET", data=None):
+            """Fetch a page; on an expired/invalid certificate retry once
+            without validation (lab mode) and remember that for the worker."""
+            try:
+                return _http_open(opener, url, method=method, data=data)
+            except RuntimeError as exc:
+                if not _is_certificate_error(exc):
+                    raise
+                log(
+                    "TLS certificate problem — retrying WITHOUT certificate validation (lab mode).",
+                    "warning",
+                )
+                insecure_tls["used"] = True
+                return _http_open(relaxed, url, method=method, data=data)
 
         log(f"Fetching login page: {target}")
-        status, final_url, headers, raw = _http_open(follow, target)
+        status, final_url, headers, raw = open_with_tls_fallback(follow, follow_relaxed, target)
         html = _decode(raw)
         log(f"Login page fetched: HTTP {status} ({len(html)} chars)")
         if status >= 400 and not html:
@@ -902,8 +942,9 @@ def run_brute_controller(config_path):
             [(n, v) for n, _, v in probe_fields]
         ).encode()
         try:
-            probe_status, probe_url, probe_headers, probe_raw = _http_open(
+            probe_status, probe_url, probe_headers, probe_raw = open_with_tls_fallback(
                 no_redirect,
+                no_redirect_relaxed,
                 form["action"],
                 method=form["method"],
                 data=probe_data,
@@ -950,6 +991,7 @@ def run_brute_controller(config_path):
         cookie_header = "; ".join(cookie_pairs)
 
         tmpdir = tempfile.mkdtemp(prefix="leakforce-brute-")
+        config["insecureTls"] = insecure_tls["used"]
         worker_cfg = _write_worker_files(
             tmpdir, fields, tasks, config, form, cookie_header, final_url
         )

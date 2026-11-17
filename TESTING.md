@@ -39,6 +39,7 @@ No third-party website was scanned or brute-forced.
 | 15 | Real-target OSINT + theHarvester e2e (`demo.testfire.net`, harvester_used=true) | `cargo test --test real_target_check testfire_osint_with_harvester -- --ignored --nocapture` | **PASS (51 s)** |
 | 16 | Brute pre-check TLS fallback (strict fails on expired cert, tolerant fetches login page) | `cargo test --test real_target_check testfire_brute_precheck_tls_fallback -- --ignored --nocapture` | **PASS** |
 | 17 | Brute pre-check end-to-end (`resolve_brute_target` on `/login.jsp` resolves; homepage gives form-check error) | `cargo test --test real_target_check testfire_brute_resolve_end_to_end -- --ignored --nocapture` | **PASS** |
+| 18 | Brute controller e2e on `demo.testfire.net/login.jsp` (Python TLS fallback + Java trust-all worker): 11 attempts, `jsmith/Demo1234` → LOGIN SUCCESS | engine CLI `brute-controller` with 5-word list | **PASS (25 s)** |
 
 ### v1.2.1 additions
 

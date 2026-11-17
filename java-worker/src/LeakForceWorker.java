@@ -12,6 +12,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,6 +25,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * LeakForce v1.0 - Java parallel login worker.
@@ -95,11 +100,24 @@ public final class LeakForceWorker {
                 seedCookies(cookies, URI.create(action), cookieHeader);
             }
 
-            HttpClient client = HttpClient.newBuilder()
+            boolean insecureTls =
+                    "true".equalsIgnoreCase(cfg.getOrDefault("insecureTls", "false").trim());
+
+            HttpClient.Builder clientBuilder = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofMillis(timeoutMs))
                     .followRedirects(HttpClient.Redirect.NEVER)
-                    .cookieHandler(cookies)
-                    .build();
+                    .cookieHandler(cookies);
+            if (insecureTls) {
+                try {
+                    clientBuilder.sslContext(trustAllContext());
+                    OUT.println("{\"type\":\"log\",\"level\":\"warning\",\"message\":"
+                            + "\"TLS certificate validation disabled (lab mode: the site's certificate is expired or invalid)\"}");
+                } catch (Exception exc) {
+                    OUT.println("{\"type\":\"log\",\"level\":\"warning\",\"message\":"
+                            + "\"Could not disable TLS certificate validation: " + escape(exc.getMessage()) + "\"}");
+                }
+            }
+            HttpClient client = clientBuilder.build();
 
             URI actionUri;
             try {
@@ -283,6 +301,28 @@ public final class LeakForceWorker {
             Thread.currentThread().interrupt();
             return false;
         }
+    }
+
+    /** SSL context that accepts any server certificate (lab-mode fallback for
+     * expired/invalid certificates, matching the Rust scan's tolerant TLS). */
+    private static SSLContext trustAllContext() throws Exception {
+        TrustManager[] trustAll = new TrustManager[] {new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+                return new X509Certificate[0];
+            }
+        }};
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, trustAll, new SecureRandom());
+        return context;
     }
 
     private static String encodeForm(List<String[]> fields) {
